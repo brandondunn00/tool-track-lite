@@ -1,13 +1,20 @@
-import React, { useState, useEffect } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
-// ---------- Reusable Input ----------
-function Input({ label, onChange, ...props }) {
+function Input({ label, onChange, value, ...props }) {
+  const safeValue =
+    value == null
+      ? ""
+      : typeof value === "object"
+      ? "" // prevent "[object Object]" from ever rendering
+      : String(value);
+
   return (
-    <label style={{ display: "grid", gap: 4, marginBottom: 8 }}>
+    <label style={{ display: "grid", gap: 4 }}>
       <span style={{ fontSize: 12, color: "#555" }}>{label}</span>
       <input
         {...props}
-        onChange={(e) => onChange && onChange(e.target.value)}
+        value={safeValue}
+        onChange={(e) => onChange?.(e.target.value)}
         style={{
           padding: "8px 10px",
           borderRadius: 6,
@@ -19,216 +26,340 @@ function Input({ label, onChange, ...props }) {
   );
 }
 
-// ---------- Main App ----------
+
+const formatCurrency = (v) =>
+  (Number(v || 0)).toLocaleString("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+
 export default function ToolInventoryApp() {
+  // Seeded example tools (you can start empty if you prefer)
   const [tools, setTools] = useState(() => {
     const saved = localStorage.getItem("tools");
     return saved ? JSON.parse(saved) : [];
   });
 
-  const [orders, setOrders] = useState(() => {
-    const saved = localStorage.getItem("orders");
+  const [reorderQueue, setReorderQueue] = useState(() => {
+    const saved = localStorage.getItem("reorderQueue");
     return saved ? JSON.parse(saved) : [];
   });
 
+  const [pendingOrders, setPendingOrders] = useState(() => {
+    const saved = localStorage.getItem("pendingOrders");
+    return saved ? JSON.parse(saved) : [];
+  });
+
+  // Controlled inputs (strings)
   const [newTool, setNewTool] = useState({
     name: "",
-    qty: "",
-    min: "",
+    quantity: "",
+    threshold: "",
     price: "",
   });
 
-  // Save to localStorage
+  // Persist to localStorage
   useEffect(() => {
     localStorage.setItem("tools", JSON.stringify(tools));
   }, [tools]);
-
   useEffect(() => {
-    localStorage.setItem("orders", JSON.stringify(orders));
-  }, [orders]);
+    localStorage.setItem("reorderQueue", JSON.stringify(reorderQueue));
+  }, [reorderQueue]);
+  useEffect(() => {
+    localStorage.setItem("pendingOrders", JSON.stringify(pendingOrders));
+  }, [pendingOrders]);
 
-  // ---------- Tool CRUD ----------
+  const toInt = (v, def = 0) => {
+    const n = parseInt(v, 10);
+    return Number.isFinite(n) ? n : def;
+  };
+  const toFloat = (v, def = 0) => {
+    const n = parseFloat(v);
+    return Number.isFinite(n) ? n : def;
+  };
+
+  /* ---------------- Add / Delete / Adjust ---------------- */
   const addTool = () => {
-    if (!newTool.name || !newTool.qty) return;
-    setTools([
-      ...tools,
-      {
-        id: Date.now(),
-        name: newTool.name,
-        qty: parseInt(newTool.qty, 10),
-        min: parseInt(newTool.min || "0", 10),
-        price: parseFloat(newTool.price || "0"),
-      },
-    ]);
-    setNewTool({ name: "", qty: "", min: "", price: "" });
+    if (!newTool.name.trim()) {
+      alert("Please enter a tool name.");
+      return;
+    }
+    const tool = {
+      id: Date.now().toString(),
+      name: newTool.name.trim(),
+      quantity: toInt(newTool.quantity, 0),
+      threshold: toInt(newTool.threshold, 0),
+      price: toFloat(newTool.price, 0),
+    };
+    setTools((prev) => [...prev, tool]);
+    setNewTool({ name: "", quantity: "", threshold: "", price: "" });
   };
 
   const deleteTool = (id) => {
-    setTools(tools.filter((t) => t.id !== id));
+    if (!window.confirm("Delete this tool?")) return;
+    setTools((prev) => prev.filter((t) => t.id !== id));
+    setReorderQueue((prev) => prev.filter((t) => t.id !== id));
+    setPendingOrders((prev) => prev.filter((o) => o.toolId !== id));
   };
 
-  const pullTool = (id, amount = 1) => {
-    setTools(
-      tools.map((t) =>
-        t.id === id
-          ? { ...t, qty: Math.max(0, t.qty - amount) }
-          : t
-      )
+  const updateQuantity = (id, delta) => {
+    setTools((prev) => {
+      const next = prev.map((t) =>
+        t.id === id ? { ...t, quantity: Math.max(0, (t.quantity || 0) + delta) } : t
+      );
+      const target = next.find((t) => t.id === id);
+      if (target && target.quantity === 0) {
+        // alert at zero and add to reorder queue if not already there
+        alert(`${target.name} has hit 0!`);
+        setReorderQueue((q) => (q.some((x) => x.id === id) ? q : [...q, target]));
+      }
+      return next;
+    });
+  };
+
+  /* ---------------- Reorder Queue ---------------- */
+  const addToReorderQueue = (tool) => {
+    setReorderQueue((q) => (q.some((x) => x.id === tool.id) ? q : [...q, tool]));
+  };
+  const removeFromReorderQueue = (id) => {
+    setReorderQueue((prev) => prev.filter((t) => t.id !== id));
+  };
+  const markOrdered = (toolId) => {
+    const item = reorderQueue.find((t) => t.id === toolId);
+    if (!item) return;
+    const order = {
+      orderId: `${toolId}-${Date.now()}`,
+      toolId,
+      name: item.name,
+      quantity: item.quantity,
+      threshold: item.threshold,
+      price: item.price,
+      orderedAt: new Date().toISOString(),
+    };
+    setPendingOrders((po) =>
+      po.some((o) => o.toolId === toolId) ? po : [...po, order]
     );
-    const tool = tools.find((t) => t.id === id);
-    if (tool && tool.qty - amount <= 0) {
-      alert(`${tool.name} has hit 0!`);
-    }
+    removeFromReorderQueue(toolId);
   };
 
-  const markOrdered = (id) => {
-    const tool = tools.find((t) => t.id === id);
-    if (!tool) return;
-    setOrders([...orders, { ...tool, orderedAt: new Date().toISOString() }]);
+  /* ---------------- Pending Orders ---------------- */
+  const markReceived = (orderId) => {
+    const order = pendingOrders.find((o) => o.orderId === orderId);
+    if (!order) return;
+
+    const defQty = order.threshold > 0 ? order.threshold : 1;
+    const input = window.prompt(
+      `Enter quantity received for "${order.name}":`,
+      String(defQty)
+    );
+    if (input === null) return;
+    const received = toInt(input, 0);
+    if (received <= 0) return alert("Enter a valid positive number.");
+
+    setTools((prev) =>
+      prev.map((t) => (t.id === order.toolId ? { ...t, quantity: (t.quantity || 0) + received } : t))
+    );
+    setPendingOrders((prev) => prev.filter((o) => o.orderId !== orderId));
   };
 
-  const removeOrder = (id) => {
-    setOrders(orders.filter((o) => o.id !== id));
+  const undoOrdered = (orderId) => {
+    const order = pendingOrders.find((o) => o.orderId === orderId);
+    if (!order) return;
+    addToReorderQueue({
+      id: order.toolId,
+      name: order.name,
+      quantity: order.quantity,
+      threshold: order.threshold,
+      price: order.price,
+    });
+    setPendingOrders((prev) => prev.filter((o) => o.orderId !== orderId));
   };
 
-  // ---------- CSV Export ----------
-  const exportCSV = () => {
-    const header = ["Employee", "Job", "Tool", "Qty", "Timestamp"];
-    const rows = tools.map((t) => [
-      "N/A",
-      "N/A",
-      t.name,
-      t.qty,
-      new Date().toISOString(),
-    ]);
-    const csv = [header, ...rows].map((r) => r.join(",")).join("\n");
-    const blob = new Blob([csv], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "tools.csv";
-    a.click();
+  const removePending = (orderId) => {
+    setPendingOrders((prev) => prev.filter((o) => o.orderId !== orderId));
   };
 
-  // ---------- UI ----------
+  /* ---------------- Totals ---------------- */
+  const totalQty = useMemo(() => tools.reduce((s, t) => s + (t.quantity || 0), 0), [tools]);
+  const totalValue = useMemo(
+    () => tools.reduce((s, t) => s + (t.quantity || 0) * (t.price || 0), 0),
+    [tools]
+  );
+
+  /* ---------------- UI ---------------- */
   return (
-    <div style={{ padding: 20, fontFamily: "Arial, sans-serif" }}>
-      <h2>Tool Track Lite</h2>
+    <div style={{ padding: 20, fontFamily: "Arial, sans-serif", maxWidth: 1100, margin: "0 auto" }}>
+      <h1>🛠️ Tool Inventory Dashboard</h1>
 
-      {/* Add tool */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(140px,1fr))",
-          gap: 12,
-          marginBottom: 12,
-        }}
-      >
-        <Input
-          label="Tool Name"
-          value={newTool.name}
-          onChange={(v) => setNewTool({ ...newTool, name: v })}
-        />
-        <Input
-          label="Quantity"
-          type="number"
-          value={newTool.qty}
-          onChange={(v) => setNewTool({ ...newTool, qty: v })}
-        />
-        <Input
-          label="Low Stock Threshold"
-          type="number"
-          value={newTool.min}
-          onChange={(v) => setNewTool({ ...newTool, min: v })}
-        />
-        <Input
-          label="Price (USD)"
-          type="number"
-          step="0.01"
-          value={newTool.price}
-          onChange={(v) => setNewTool({ ...newTool, price: v })}
-        />
-        <button
-          onClick={addTool}
-          style={{
-            padding: "10px 16px",
-            borderRadius: 6,
-            background: "#2563eb",
-            color: "#fff",
-            border: "none",
-            cursor: "pointer",
-            alignSelf: "end",
-          }}
-        >
-          Add Tool
-        </button>
+      {/* Summary */}
+      <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
+        <Metric label="Total Tools" value={tools.length} />
+        <Metric label="Total Qty" value={totalQty} />
+        <Metric label="Total Value" value={formatCurrency(totalValue)} />
       </div>
 
-      {/* Tools table */}
-      <table
-        style={{
-          width: "100%",
-          borderCollapse: "collapse",
-          marginBottom: 20,
-        }}
-      >
+      {/* Add New Tool */}
+      <div style={{ marginBottom: 20, border: "1px solid #eee", padding: 12, borderRadius: 8 }}>
+        <h2 style={{ marginTop: 0 }}>Add a New Tool</h2>
+        <div style={{ display: "grid", gridTemplateColumns: "2fr repeat(3, 1fr) auto", gap: 8, alignItems: "end" }}>
+          <Input
+            label="Tool Name"
+            value={newTool.name}
+            onChange={(v) => setNewTool({ ...newTool, name: v })}
+            placeholder="e.g., Carbide Endmill 1/4in"
+          />
+          <Input
+            label="Quantity"
+            type="number"
+            value={newTool.quantity}
+            onChange={(v) => setNewTool({ ...newTool, quantity: v })}
+            placeholder="e.g., 12"
+          />
+          <Input
+            label="Low Stock Threshold"
+            type="number"
+            value={newTool.threshold}
+            onChange={(v) => setNewTool({ ...newTool, threshold: v })}
+            placeholder="e.g., 10"
+          />
+          <Input
+            label="Price (USD)"
+            type="number"
+            step="0.01"
+            value={newTool.price}
+            onChange={(v) => setNewTool({ ...newTool, price: v })}
+            placeholder="e.g., 15.50"
+          />
+          <button onClick={addTool} style={btnPrimary}>Add Tool</button>
+        </div>
+      </div>
+
+      {/* Inventory Table */}
+      <h2>Current Inventory</h2>
+      <table border="1" cellPadding="8" style={{ borderCollapse: "collapse", width: "100%" }}>
         <thead>
-          <tr style={{ background: "#f3f4f6" }}>
-            <th style={{ padding: 8, textAlign: "left" }}>Name</th>
-            <th style={{ padding: 8 }}>Qty</th>
-            <th style={{ padding: 8 }}>Low Threshold</th>
-            <th style={{ padding: 8 }}>Price</th>
-            <th style={{ padding: 8 }}>Actions</th>
+          <tr>
+            <th>Tool Name</th>
+            <th>Quantity</th>
+            <th>Low Stock Threshold</th>
+            <th>Price</th>
+            <th>Total Value</th>
+            <th>Actions</th>
+            <th>Status</th>
           </tr>
         </thead>
         <tbody>
-          {tools.map((t) => (
-            <tr
-              key={t.id}
-              style={{
-                background:
-                  t.qty <= t.min ? "rgba(254,226,226,0.5)" : "transparent",
-              }}
-            >
-              <td style={{ padding: 8 }}>{t.name}</td>
-              <td style={{ padding: 8, textAlign: "center" }}>{t.qty}</td>
-              <td style={{ padding: 8, textAlign: "center" }}>{t.min}</td>
-              <td style={{ padding: 8, textAlign: "center" }}>
-                {t.price.toLocaleString("en-US", {
-                  style: "currency",
-                  currency: "USD",
-                  minimumFractionDigits: 2,
-                })}
-              </td>
-              <td style={{ padding: 8, textAlign: "center" }}>
-                <button onClick={() => pullTool(t.id)}>Pull</button>{" "}
-                <button onClick={() => markOrdered(t.id)}>Ordered</button>{" "}
-                <button onClick={() => deleteTool(t.id)}>Delete</button>
-              </td>
+          {tools.map((tool) => {
+            const isLow = (tool.quantity || 0) <= (tool.threshold || 0); // <= per your rule
+            const isZero = (tool.quantity || 0) === 0;
+            return (
+              <tr key={tool.id} style={{ background: isLow ? "#fff4e5" : "white" }}>
+                <td>{tool.name}</td>
+                <td style={{ textAlign: "center" }}>{tool.quantity || 0}</td>
+                <td style={{ textAlign: "center" }}>{tool.threshold || 0}</td>
+                <td style={{ textAlign: "center" }}>{formatCurrency(tool.price)}</td>
+                <td style={{ textAlign: "center" }}>{formatCurrency((tool.price || 0) * (tool.quantity || 0))}</td>
+                <td style={{ whiteSpace: "nowrap", textAlign: "center" }}>
+                  <button onClick={() => updateQuantity(tool.id, -1)} style={btn}>-</button>{" "}
+                  <button onClick={() => updateQuantity(tool.id, 1)} style={btn}>+</button>{" "}
+                  <button onClick={() => addToReorderQueue(tool)} style={btn}>Add to Reorder Queue</button>{" "}
+                  <button onClick={() => deleteTool(tool.id)} style={btnDanger}>Delete</button>
+                </td>
+                <td style={{ textAlign: "center" }}>
+                  {isZero ? (
+                    <span style={{ color: "red", fontWeight: "bold" }}>❌ Out of Stock</span>
+                  ) : isLow ? (
+                    <span style={{ color: "orange", fontWeight: "bold" }}>⚠️ Low Stock</span>
+                  ) : (
+                    <span style={{ color: "green" }}>✅ In Stock</span>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+          {tools.length === 0 && (
+            <tr>
+              <td colSpan={7} style={{ textAlign: "center", color: "#666" }}>(No tools yet)</td>
             </tr>
-          ))}
+          )}
         </tbody>
       </table>
 
-      {/* Pending orders */}
-      {orders.length > 0 && (
-        <div style={{ marginBottom: 20 }}>
-          <h3>Pending Orders</h3>
-          <ul>
-            {orders.map((o) => (
-              <li key={o.id}>
-                {o.name} (Qty {o.qty}) — Ordered{" "}
-                {new Date(o.orderedAt).toLocaleString()}{" "}
-                <button onClick={() => removeOrder(o.id)}>Remove</button>
-              </li>
-            ))}
-          </ul>
-        </div>
+      {/* Reorder Queue */}
+      <h2 style={{ marginTop: 28 }}>📦 Reorder Queue</h2>
+      {reorderQueue.length === 0 ? (
+        <p>No tools in reorder queue.</p>
+      ) : (
+        <ul style={{ paddingLeft: 18 }}>
+          {reorderQueue.map((tool) => (
+            <li key={tool.id} style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 8 }}>
+              <span>
+                <strong>{tool.name}</strong> — Current Qty: {tool.quantity}, Threshold: {tool.threshold}
+              </span>
+              <button onClick={() => markOrdered(tool.id)} style={btnPrimary}>Mark Ordered</button>
+              <button onClick={() => removeFromReorderQueue(tool.id)} style={btn}>Remove</button>
+            </li>
+          ))}
+        </ul>
       )}
 
-      {/* Export */}
-      <button onClick={exportCSV}>Export CSV</button>
+      {/* Pending Orders */}
+      <h2 style={{ marginTop: 28 }}>🧾 Pending Orders</h2>
+      {pendingOrders.length === 0 ? (
+        <p>No pending orders.</p>
+      ) : (
+        <ul style={{ paddingLeft: 18 }}>
+          {pendingOrders.map((order) => (
+            <li key={order.orderId} style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 8 }}>
+              <span>
+                <strong>{order.name}</strong> — Ordered:{" "}
+                <em>{new Date(order.orderedAt).toLocaleString()}</em>
+              </span>
+              <button onClick={() => markReceived(order.orderId)} style={btnPrimary}>Mark Received</button>
+              <button onClick={() => undoOrdered(order.orderId)} style={btn}>Undo</button>
+              <button onClick={() => removePending(order.orderId)} style={btnDanger}>Remove</button>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
 
+/* ---------- Tiny UI helpers ---------- */
+function Metric({ label, value }) {
+  return (
+    <div style={{
+      border: "1px solid #eee",
+      borderRadius: 8,
+      padding: "10px 12px",
+      background: "#fafafa",
+      minWidth: 140
+    }}>
+      <div style={{ fontSize: 12, color: "#6b7280" }}>{label}</div>
+      <div style={{ fontSize: 20, fontWeight: "bold" }}>{value}</div>
+    </div>
+  );
+}
+
+const btn = {
+  border: "1px solid #ccc",
+  padding: "6px 10px",
+  borderRadius: 6,
+  cursor: "pointer",
+  background: "#fff",
+};
+const btnPrimary = {
+  ...btn,
+  background: "#111827",
+  color: "#fff",
+  border: "1px solid #111827",
+};
+const btnDanger = {
+  ...btn,
+  background: "crimson",
+  color: "#fff",
+  border: "1px solid crimson",
+};
