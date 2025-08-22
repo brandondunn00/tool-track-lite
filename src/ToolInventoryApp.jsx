@@ -1,365 +1,734 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
+import "./modern-light.css";
 
-function Input({ label, onChange, value, ...props }) {
-  const safeValue =
-    value == null
-      ? ""
-      : typeof value === "object"
-      ? "" // prevent "[object Object]" from ever rendering
-      : String(value);
-
+/* ---------------- Reusable input ---------------- */
+function Input({ label, value, onChange, ...props }) {
   return (
-    <label style={{ display: "grid", gap: 4 }}>
-      <span style={{ fontSize: 12, color: "#555" }}>{label}</span>
+    <div className="input">
+      <label>{label}</label>
       <input
         {...props}
-        value={safeValue}
+        value={String(value ?? "")}
         onChange={(e) => onChange?.(e.target.value)}
-        style={{
-          padding: "8px 10px",
-          borderRadius: 6,
-          border: "1px solid #ccc",
-          outline: "none",
-        }}
       />
-    </label>
+    </div>
   );
 }
 
-
-const formatCurrency = (v) =>
-  (Number(v || 0)).toLocaleString("en-US", {
+/* ---------------- Helpers ---------------- */
+const money = (v) =>
+  Number(v || 0).toLocaleString("en-US", {
     style: "currency",
     currency: "USD",
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
 
+// tiny sparkline (no libs)
+function sparklinePath(points, w = 260, h = 80, pad = 6) {
+  if (!points.length) return "";
+  const ys = points;
+  const min = Math.min(...ys);
+  const max = Math.max(...ys);
+  const range = max - min || 1;
+  const x = (i, n) => pad + (i / (n - 1 || 1)) * (w - pad * 2);
+  const y = (v) => h - pad - ((v - min) / range) * (h - pad * 2);
+  return points
+    .map((v, i, a) => `${i === 0 ? "M" : "L"} ${x(i, a.length).toFixed(1)} ${y(v).toFixed(1)}`)
+    .join(" ");
+}
+
+function makeHistory(qty = 0, threshold = 0) {
+  const base = Math.max(threshold * 1.2, 10);
+  const step = Math.max(1, Math.round((qty || 6) / 6));
+  return Array.from({ length: 12 }, (_, i) => {
+    const decay = Math.max(0, qty - i * step);
+    return Math.round((decay + base) / 1.5);
+  }).reverse();
+}
+
+/* ---------------- Main ---------------- */
 export default function ToolInventoryApp() {
-  // Seeded example tools (you can start empty if you prefer)
-  const [tools, setTools] = useState(() => {
-    const saved = localStorage.getItem("tools");
-    return saved ? JSON.parse(saved) : [];
-  });
-
-  const [reorderQueue, setReorderQueue] = useState(() => {
-    const saved = localStorage.getItem("reorderQueue");
-    return saved ? JSON.parse(saved) : [];
-  });
-
-  const [pendingOrders, setPendingOrders] = useState(() => {
-    const saved = localStorage.getItem("pendingOrders");
-    return saved ? JSON.parse(saved) : [];
-  });
-
-  // Controlled inputs (strings)
-  const [newTool, setNewTool] = useState({
+  const [tools, setTools] = useState([]);
+  const [form, setForm] = useState({
     name: "",
+    manufacturer: "",
+    partNumber: "",
+    description: "",
     quantity: "",
     threshold: "",
     price: "",
   });
+  const [queue, setQueue] = useState([]);
+  const [orders, setOrders] = useState([]);
+  const [toast, setToast] = useState("");
+  const [search, setSearch] = useState("");
+  const [selectedId, setSelectedId] = useState(null);
 
-  // Persist to localStorage
-  useEffect(() => {
-    localStorage.setItem("tools", JSON.stringify(tools));
-  }, [tools]);
-  useEffect(() => {
-    localStorage.setItem("reorderQueue", JSON.stringify(reorderQueue));
-  }, [reorderQueue]);
-  useEffect(() => {
-    localStorage.setItem("pendingOrders", JSON.stringify(pendingOrders));
-  }, [pendingOrders]);
+  // modal
+  const [isModalOpen, setModalOpen] = useState(false);
+  const [modal, setModal] = useState({
+    id: null,
+    name: "",
+    manufacturer: "",
+    partNumber: "",
+    description: "",
+    quantity: 0,
+    threshold: 0,
+    price: 0,
+    vendor: "",
+    projects: "",
+  });
 
-  const toInt = (v, def = 0) => {
-    const n = parseInt(v, 10);
-    return Number.isFinite(n) ? n : def;
+  const note = (msg) => {
+    setToast(msg);
+    clearTimeout(note._t);
+    note._t = setTimeout(() => setToast(""), 2400);
   };
-  const toFloat = (v, def = 0) => {
-    const n = parseFloat(v);
-    return Number.isFinite(n) ? n : def;
-  };
 
-  /* ---------------- Add / Delete / Adjust ---------------- */
+  const totalQty = tools.reduce((a, t) => a + (t.quantity || 0), 0);
+  const totalValue = tools.reduce((a, t) => a + (t.quantity || 0) * (t.price || 0), 0);
+
+  const filteredTools = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return tools;
+    return tools.filter((t) => {
+      const hay = [t.name, t.manufacturer, t.partNumber, t.description]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(q);
+    });
+  }, [tools, search]);
+
+  const selected = useMemo(
+    () => tools.find((t) => t.id === selectedId) || null,
+    [tools, selectedId]
+  );
+
+  /* ---------------- Actions ---------------- */
   const addTool = () => {
-    if (!newTool.name.trim()) {
-      alert("Please enter a tool name.");
-      return;
-    }
-    const tool = {
-      id: Date.now().toString(),
-      name: newTool.name.trim(),
-      quantity: toInt(newTool.quantity, 0),
-      threshold: toInt(newTool.threshold, 0),
-      price: toFloat(newTool.price, 0),
+    if (!form.name?.trim()) return;
+    const t = {
+      id: Date.now(),
+      name: form.name.trim(),
+      manufacturer: form.manufacturer.trim(),
+      partNumber: form.partNumber.trim(),
+      description: form.description.trim(),
+      quantity: Math.max(0, parseInt(form.quantity || 0, 10)),
+      threshold: Math.max(0, parseInt(form.threshold || 0, 10)), // low when qty <= threshold
+      price: Number(parseFloat(form.price || 0).toFixed(2)),
+      vendor: "",
+      projects: [],
     };
-    setTools((prev) => [...prev, tool]);
-    setNewTool({ name: "", quantity: "", threshold: "", price: "" });
+    setTools((prev) => [...prev, t]);
+    setForm({
+      name: "",
+      manufacturer: "",
+      partNumber: "",
+      description: "",
+      quantity: "",
+      threshold: "",
+      price: "",
+    });
+    setSelectedId(t.id);
+    note("Tool added ✅");
   };
 
-  const deleteTool = (id) => {
+  const updateQty = (id, delta) => {
+    setTools((prev) =>
+      prev.map((t) =>
+        t.id === id ? { ...t, quantity: Math.max(0, (t.quantity || 0) + delta) } : t
+      )
+    );
+    const tool = tools.find((t) => t.id === id);
+    if (tool && Math.max(0, (tool.quantity || 0) + delta) === 0) {
+      setQueue((q) => (q.some((x) => x.id === id) ? q : [...q, tool]));
+      note(`${tool.name} hit 0 ⚠️`);
+    }
+  };
+
+  const removeTool = (id) => {
     if (!window.confirm("Delete this tool?")) return;
     setTools((prev) => prev.filter((t) => t.id !== id));
-    setReorderQueue((prev) => prev.filter((t) => t.id !== id));
-    setPendingOrders((prev) => prev.filter((o) => o.toolId !== id));
+    setQueue((prev) => prev.filter((t) => t.id !== id));
+    setOrders((prev) => prev.filter((o) => o.id !== id));
+    if (selectedId === id) setSelectedId(null);
+    note("Tool deleted 🗑️");
   };
 
-  const updateQuantity = (id, delta) => {
-    setTools((prev) => {
-      const next = prev.map((t) =>
-        t.id === id ? { ...t, quantity: Math.max(0, (t.quantity || 0) + delta) } : t
-      );
-      const target = next.find((t) => t.id === id);
-      if (target && target.quantity === 0) {
-        // alert at zero and add to reorder queue if not already there
-        alert(`${target.name} has hit 0!`);
-        setReorderQueue((q) => (q.some((x) => x.id === id) ? q : [...q, target]));
-      }
-      return next;
-    });
+  const addToQueue = (tool) => {
+    setQueue((q) => (q.some((x) => x.id === tool.id) ? q : [...q, tool]));
+    note("Added to reorder queue 📦");
   };
+  const removeFromQueue = (id) => setQueue((prev) => prev.filter((t) => t.id !== id));
 
-  /* ---------------- Reorder Queue ---------------- */
-  const addToReorderQueue = (tool) => {
-    setReorderQueue((q) => (q.some((x) => x.id === tool.id) ? q : [...q, tool]));
-  };
-  const removeFromReorderQueue = (id) => {
-    setReorderQueue((prev) => prev.filter((t) => t.id !== id));
-  };
-  const markOrdered = (toolId) => {
-    const item = reorderQueue.find((t) => t.id === toolId);
-    if (!item) return;
+  const markOrdered = (id) => {
+    const t = tools.find((x) => x.id === id);
+    if (!t) return;
     const order = {
-      orderId: `${toolId}-${Date.now()}`,
-      toolId,
-      name: item.name,
-      quantity: item.quantity,
-      threshold: item.threshold,
-      price: item.price,
+      orderId: `${id}-${Date.now()}`,
+      id,
+      name: t.name,
+      quantity: t.threshold || 1,
+      price: t.price || 0,
       orderedAt: new Date().toISOString(),
     };
-    setPendingOrders((po) =>
-      po.some((o) => o.toolId === toolId) ? po : [...po, order]
-    );
-    removeFromReorderQueue(toolId);
+    setOrders((prev) => (prev.some((o) => o.id === id) ? prev : [...prev, order]));
+    removeFromQueue(id);
+    note("Marked as ordered 🧾");
   };
 
-  /* ---------------- Pending Orders ---------------- */
   const markReceived = (orderId) => {
-    const order = pendingOrders.find((o) => o.orderId === orderId);
-    if (!order) return;
-
-    const defQty = order.threshold > 0 ? order.threshold : 1;
-    const input = window.prompt(
-      `Enter quantity received for "${order.name}":`,
-      String(defQty)
-    );
+    const o = orders.find((x) => x.orderId === orderId);
+    if (!o) return;
+    const input = window.prompt(`Qty received for "${o.name}"`, String(o.quantity || 1));
     if (input === null) return;
-    const received = toInt(input, 0);
-    if (received <= 0) return alert("Enter a valid positive number.");
-
+    const received = Math.max(0, parseInt(input, 10) || 0);
+    if (received <= 0) return note("Enter a valid positive number.");
     setTools((prev) =>
-      prev.map((t) => (t.id === order.toolId ? { ...t, quantity: (t.quantity || 0) + received } : t))
+      prev.map((t) => (t.id === o.id ? { ...t, quantity: (t.quantity || 0) + received } : t))
     );
-    setPendingOrders((prev) => prev.filter((o) => o.orderId !== orderId));
+    setOrders((prev) => prev.filter((x) => x.orderId !== orderId));
+    note("Order received ✅");
   };
 
   const undoOrdered = (orderId) => {
-    const order = pendingOrders.find((o) => o.orderId === orderId);
-    if (!order) return;
-    addToReorderQueue({
-      id: order.toolId,
-      name: order.name,
-      quantity: order.quantity,
-      threshold: order.threshold,
-      price: order.price,
-    });
-    setPendingOrders((prev) => prev.filter((o) => o.orderId !== orderId));
+    const o = orders.find((x) => x.orderId === orderId);
+    if (!o) return;
+    addToQueue({ id: o.id, name: o.name, quantity: o.quantity, threshold: 0, price: o.price });
+    setOrders((prev) => prev.filter((x) => x.orderId !== orderId));
+    note("Moved back to queue ↩️");
   };
 
   const removePending = (orderId) => {
-    setPendingOrders((prev) => prev.filter((o) => o.orderId !== orderId));
+    setOrders((prev) => prev.filter((x) => x.orderId !== orderId));
+    note("Pending order removed");
   };
 
-  /* ---------------- Totals ---------------- */
-  const totalQty = useMemo(() => tools.reduce((s, t) => s + (t.quantity || 0), 0), [tools]);
-  const totalValue = useMemo(
-    () => tools.reduce((s, t) => s + (t.quantity || 0) * (t.price || 0), 0),
-    [tools]
-  );
+  const exportCSV = () => {
+    const header = ["Employee", "Job", "Tool", "Qty", "Timestamp"];
+    const rows = tools.map((t) => ["N/A", "N/A", t.name, t.quantity, new Date().toISOString()]);
+    const csv = [header, ...rows].map((r) => r.join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "tools.csv";
+    a.click();
+    URL.revokeObjectURL(url);
+    note("Exported CSV 📤");
+  };
+
+  // modal helpers
+  const openDetails = (tool) => {
+    setModal({
+      id: tool.id,
+      name: tool.name,
+      manufacturer: tool.manufacturer || "",
+      partNumber: tool.partNumber || "",
+      description: tool.description || "",
+      quantity: tool.quantity || 0,
+      threshold: tool.threshold || 0,
+      price: tool.price || 0,
+      vendor: tool.vendor || "",
+      projects: (tool.projects || []).join(", "),
+    });
+    setModalOpen(true);
+  };
+  const saveDetails = () => {
+    setTools((prev) =>
+      prev.map((t) =>
+        t.id === modal.id
+          ? {
+              ...t,
+              name: modal.name.trim(),
+              manufacturer: modal.manufacturer.trim(),
+              partNumber: modal.partNumber.trim(),
+              description: modal.description.trim(),
+              quantity: Math.max(0, parseInt(modal.quantity, 10) || 0),
+              threshold: Math.max(0, parseInt(modal.threshold, 10) || 0),
+              price: Number(parseFloat(modal.price || 0).toFixed(2)),
+              vendor: modal.vendor.trim(),
+              projects: modal.projects
+                .split(",")
+                .map((p) => p.trim())
+                .filter(Boolean),
+            }
+          : t
+      )
+    );
+    setModalOpen(false);
+    note("Details saved 💾");
+  };
 
   /* ---------------- UI ---------------- */
   return (
-    <div style={{ padding: 20, fontFamily: "Arial, sans-serif", maxWidth: 1100, margin: "0 auto" }}>
-      <h1>🛠️ Tool Inventory Dashboard</h1>
-
-      {/* Summary */}
-      <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
-        <Metric label="Total Tools" value={tools.length} />
-        <Metric label="Total Qty" value={totalQty} />
-        <Metric label="Total Value" value={formatCurrency(totalValue)} />
+    <div className="app">
+      {/* Header */}
+      <div className="header">
+        <div className="brand">
+          <div className="logo">🛠️</div>
+          <h1>Purchasing Planning</h1>
+        </div>
+        <div className="toolbar">
+          <button className="btn" onClick={exportCSV}>Export CSV</button>
+        </div>
       </div>
 
-      {/* Add New Tool */}
-      <div style={{ marginBottom: 20, border: "1px solid #eee", padding: 12, borderRadius: 8 }}>
-        <h2 style={{ marginTop: 0 }}>Add a New Tool</h2>
-        <div style={{ display: "grid", gridTemplateColumns: "2fr repeat(3, 1fr) auto", gap: 8, alignItems: "end" }}>
+      {/* Stat Tiles */}
+      <div className="metrics">
+        <div className="metric card stat-accent">
+          <div className="label">Purchase Recommended</div>
+          <div className="value">
+            {tools.filter((t) => (t.quantity || 0) <= (t.threshold || 0)).length}
+          </div>
+          <div className="note">Low or zero stock</div>
+        </div>
+        <div className="metric card">
+          <div className="label">Reorder Queue</div>
+          <div className="value">{queue.length}</div>
+          <div className="note">Awaiting PO</div>
+        </div>
+        <div className="metric card">
+          <div className="label">Out of Stock</div>
+          <div className="value">
+            {tools.filter((t) => (t.quantity || 0) === 0).length}
+          </div>
+          <div className="note">Immediate action</div>
+        </div>
+        <div className="metric card">
+          <div className="label">Inventory Value</div>
+          <div className="value">{money(totalValue)}</div>
+          <div className="note">{totalQty} items</div>
+        </div>
+      </div>
+
+      {/* Search + toggles */}
+      <div className="controls">
+        <div className="search">
+          <input
+            placeholder="Search name, manufacturer, part #, description…"
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        <button className="pill active">Item UoM</button>
+        <button className="pill">Vendor UoM</button>
+        <button className="pill">Filter</button>
+      </div>
+
+      {/* Add Tool (wider grid) */}
+      <div className="card form">
+        <div
+          className="form-grid"
+          style={{ gridTemplateColumns: "2fr 1.4fr 1.4fr 2fr 1fr 1fr 1fr auto" }}
+        >
           <Input
             label="Tool Name"
-            value={newTool.name}
-            onChange={(v) => setNewTool({ ...newTool, name: v })}
-            placeholder="e.g., Carbide Endmill 1/4in"
+            value={form.name}
+            onChange={(v) => setForm({ ...form, name: v })}
+            placeholder='e.g., 1/4" Carbide Endmill'
           />
           <Input
-            label="Quantity"
-            type="number"
-            value={newTool.quantity}
-            onChange={(v) => setNewTool({ ...newTool, quantity: v })}
-            placeholder="e.g., 12"
+            label="Manufacturer"
+            value={form.manufacturer}
+            onChange={(v) => setForm({ ...form, manufacturer: v })}
+            placeholder="YG-1"
           />
           <Input
-            label="Low Stock Threshold"
+            label="Part Number"
+            value={form.partNumber}
+            onChange={(v) => setForm({ ...form, partNumber: v })}
+            placeholder="EM1234-0250"
+          />
+          <Input
+            label="Description"
+            value={form.description}
+            onChange={(v) => setForm({ ...form, description: v })}
+            placeholder="2-flute, TiAlN"
+          />
+          <Input
+            label="Qty"
             type="number"
-            value={newTool.threshold}
-            onChange={(v) => setNewTool({ ...newTool, threshold: v })}
-            placeholder="e.g., 10"
+            value={form.quantity}
+            onChange={(v) => setForm({ ...form, quantity: v })}
+            placeholder="12"
+          />
+          <Input
+            label="Low Threshold"
+            type="number"
+            value={form.threshold}
+            onChange={(v) => setForm({ ...form, threshold: v })}
+            placeholder="10"
           />
           <Input
             label="Price (USD)"
             type="number"
             step="0.01"
-            value={newTool.price}
-            onChange={(v) => setNewTool({ ...newTool, price: v })}
-            placeholder="e.g., 15.50"
+            value={form.price}
+            onChange={(v) => setForm({ ...form, price: v })}
+            placeholder="15.50"
           />
-          <button onClick={addTool} style={btnPrimary}>Add Tool</button>
+          <button className="btn btn-primary" onClick={addTool}>Add Tool</button>
         </div>
       </div>
 
-      {/* Inventory Table */}
-      <h2>Current Inventory</h2>
-      <table border="1" cellPadding="8" style={{ borderCollapse: "collapse", width: "100%" }}>
-        <thead>
-          <tr>
-            <th>Tool Name</th>
-            <th>Quantity</th>
-            <th>Low Stock Threshold</th>
-            <th>Price</th>
-            <th>Total Value</th>
-            <th>Actions</th>
-            <th>Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          {tools.map((tool) => {
-            const isLow = (tool.quantity || 0) <= (tool.threshold || 0); // <= per your rule
-            const isZero = (tool.quantity || 0) === 0;
-            return (
-              <tr key={tool.id} style={{ background: isLow ? "#fff4e5" : "white" }}>
-                <td>{tool.name}</td>
-                <td style={{ textAlign: "center" }}>{tool.quantity || 0}</td>
-                <td style={{ textAlign: "center" }}>{tool.threshold || 0}</td>
-                <td style={{ textAlign: "center" }}>{formatCurrency(tool.price)}</td>
-                <td style={{ textAlign: "center" }}>{formatCurrency((tool.price || 0) * (tool.quantity || 0))}</td>
-                <td style={{ whiteSpace: "nowrap", textAlign: "center" }}>
-                  <button onClick={() => updateQuantity(tool.id, -1)} style={btn}>-</button>{" "}
-                  <button onClick={() => updateQuantity(tool.id, 1)} style={btn}>+</button>{" "}
-                  <button onClick={() => addToReorderQueue(tool)} style={btn}>Add to Reorder Queue</button>{" "}
-                  <button onClick={() => deleteTool(tool.id)} style={btnDanger}>Delete</button>
-                </td>
-                <td style={{ textAlign: "center" }}>
-                  {isZero ? (
-                    <span style={{ color: "red", fontWeight: "bold" }}>❌ Out of Stock</span>
-                  ) : isLow ? (
-                    <span style={{ color: "orange", fontWeight: "bold" }}>⚠️ Low Stock</span>
-                  ) : (
-                    <span style={{ color: "green" }}>✅ In Stock</span>
-                  )}
-                </td>
+      {/* Main layout: table (wide) + details (narrow) */}
+      <div className="layout">
+        {/* LEFT: Inventory table */}
+        <div className="card table-wrap">
+          <table className="table">
+            <thead>
+              <tr>
+                <th style={{ width: "42%" }}>Item</th>
+                <th>On Hand</th>
+                <th style={{ textAlign: "right" }}>Total Cost</th>
+                <th>Actions</th>
+                <th>Status</th>
               </tr>
-            );
-          })}
-          {tools.length === 0 && (
-            <tr>
-              <td colSpan={7} style={{ textAlign: "center", color: "#666" }}>(No tools yet)</td>
-            </tr>
+            </thead>
+            <tbody>
+              {filteredTools.length === 0 && (
+                <tr>
+                  <td colSpan={5} style={{ color: "var(--muted)" }}>
+                    No items found.
+                  </td>
+                </tr>
+              )}
+              {filteredTools.map((t) => {
+                const isLow = (t.quantity || 0) <= (t.threshold || 0);
+                const isZero = (t.quantity || 0) === 0;
+                const cap = Math.max(t.threshold * 2 || 20, 10);
+                const pct = Math.min(100, Math.round(((t.quantity || 0) / cap) * 100));
+                const active = selectedId === t.id;
+
+                return (
+                  <tr
+                    key={t.id}
+                    onClick={() => setSelectedId(t.id)}
+                    style={{ cursor: "pointer", background: active ? "#f5faff" : undefined }}
+                    title="Click to view details"
+                  >
+                    <td>
+                      <div style={{ fontWeight: 600 }}>{t.name}</div>
+                      <div className="subtle">
+                        {t.manufacturer || "—"} · {t.partNumber || "—"}
+                      </div>
+                      {t.description && (
+                        <div className="subtle" style={{ marginTop: 2 }}>
+                          {t.description}
+                        </div>
+                      )}
+                    </td>
+                    <td style={{ minWidth: 220 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                        <input
+                          style={{
+                            width: 90,
+                            padding: 8,
+                            border: "1px solid var(--border)",
+                            borderRadius: 10,
+                          }}
+                          type="number"
+                          value={t.quantity || 0}
+                          onChange={(e) =>
+                            setTools((prev) =>
+                              prev.map((x) =>
+                                x.id === t.id
+                                  ? { ...x, quantity: parseInt(e.target.value || 0, 10) }
+                                  : x
+                              )
+                            )
+                          }
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                        <div style={{ flex: 1 }}>
+                          <div className="progress">
+                            <span style={{ width: `${pct}%` }} />
+                          </div>
+                          <div className="subtle">
+                            {t.quantity || 0} on hand · min {t.threshold || 0}
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+                    <td style={{ textAlign: "right" }}>
+                      {money((t.quantity || 0) * (t.price || 0))}
+                    </td>
+                    <td style={{ whiteSpace: "nowrap" }}>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        <button
+                          className="btn"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            updateQty(t.id, -1);
+                          }}
+                        >
+                          -1
+                        </button>
+                        <button
+                          className="btn"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            updateQty(t.id, 1);
+                          }}
+                        >
+                          +1
+                        </button>
+                        <button
+                          className="btn"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            addToQueue(t);
+                          }}
+                        >
+                          Reorder
+                        </button>
+                        <button
+                          className="btn"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openDetails(t);
+                          }}
+                        >
+                          Details
+                        </button>
+                        <button
+                          className="btn btn-danger"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            removeTool(t.id);
+                          }}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </td>
+                    <td>
+                      {isZero ? (
+                        <span className="badge zero">❌ Out of Stock</span>
+                      ) : isLow ? (
+                        <span className="badge low">⚠️ Low Stock</span>
+                      ) : (
+                        <span className="badge ok">✅ In Stock</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        {/* RIGHT: Details / analytics card */}
+        <aside className="card side">
+          {!selected ? (
+            <>
+              <h3>Expected On-Hand Supply</h3>
+              <div className="subtle">Pick an item to see details (vendors, incoming, demand)</div>
+              <svg
+                width="100%"
+                height="86"
+                viewBox="0 0 260 86"
+                preserveAspectRatio="none"
+                style={{
+                  background: "#fafafa",
+                  border: "1px solid var(--border)",
+                  borderRadius: 10,
+                  marginTop: 10,
+                }}
+              >
+                <path d={sparklinePath(makeHistory(12, 6))} fill="none" stroke="#60a5fa" strokeWidth="2" />
+                <line x1="0" x2="260" y1="70" y2="70" stroke="#f59e0b" strokeDasharray="4 4" strokeWidth="1" />
+              </svg>
+              <div className="subtle" style={{ marginTop: 8 }}>(Select an item on the left)</div>
+            </>
+          ) : (
+            <>
+              <h3 style={{ marginBottom: 4 }}>{selected.name}</h3>
+              <div className="subtle" style={{ marginBottom: 10 }}>
+                {selected.manufacturer || "—"} · {selected.partNumber || "—"}
+              </div>
+
+              <svg
+                width="100%"
+                height="86"
+                viewBox="0 0 260 86"
+                preserveAspectRatio="none"
+                style={{ background: "#fafafa", border: "1px solid var(--border)", borderRadius: 10 }}
+              >
+                <path
+                  d={sparklinePath(makeHistory(selected.quantity, selected.threshold))}
+                  fill="none"
+                  stroke="#60a5fa"
+                  strokeWidth="2"
+                />
+                <line x1="0" x2="260" y1="70" y2="70" stroke="#f59e0b" strokeDasharray="4 4" strokeWidth="1" />
+              </svg>
+
+              <div className="kpi">
+                <div>
+                  <div className="subtle">On Hand</div>
+                  <div style={{ fontWeight: 700, fontSize: 18 }}>{selected.quantity || 0}</div>
+                </div>
+                <div>
+                  <div className="subtle">Incoming</div>
+                  <div style={{ fontWeight: 700, fontSize: 18 }}>
+                    {orders.filter((o) => o.id === selected.id).length}
+                  </div>
+                </div>
+                <div>
+                  <div className="subtle">Demand</div>
+                  <div style={{ fontWeight: 700, fontSize: 18 }}>
+                    {Math.max(0, (selected.threshold || 0) - (selected.quantity || 0))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="toolbar" style={{ marginTop: 8 }}>
+                <button className="btn" onClick={() => updateQty(selected.id, -1)}>-1</button>
+                <button className="btn" onClick={() => updateQty(selected.id, +1)}>+1</button>
+                <button className="btn" onClick={() => addToQueue(selected)}>Reorder</button>
+                <button className="btn btn-success" onClick={() => markOrdered(selected.id)}>Mark Ordered</button>
+              </div>
+
+              <div style={{ marginTop: 12 }}>
+                <button className="btn" onClick={() => openDetails(selected)}>Edit Details</button>
+              </div>
+            </>
           )}
-        </tbody>
-      </table>
+        </aside>
+      </div>
 
       {/* Reorder Queue */}
-      <h2 style={{ marginTop: 28 }}>📦 Reorder Queue</h2>
-      {reorderQueue.length === 0 ? (
-        <p>No tools in reorder queue.</p>
-      ) : (
-        <ul style={{ paddingLeft: 18 }}>
-          {reorderQueue.map((tool) => (
-            <li key={tool.id} style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 8 }}>
+      <div className="card" style={{ marginTop: 18 }}>
+        <div style={{ padding: 16, borderBottom: "1px solid var(--border)" }}>
+          <strong>📦 Reorder Queue</strong>
+        </div>
+        <ul style={{ listStyle: "none", margin: 0, padding: 16 }}>
+          {queue.length === 0 && <li className="subtle">No tools in reorder queue.</li>}
+          {queue.map((t) => (
+            <li
+              key={t.id}
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                padding: "10px 0",
+                borderBottom: "1px dashed var(--border)",
+              }}
+            >
               <span>
-                <strong>{tool.name}</strong> — Current Qty: {tool.quantity}, Threshold: {tool.threshold}
+                <strong>{t.name}</strong> · Qty {t.quantity} · Threshold {t.threshold}
               </span>
-              <button onClick={() => markOrdered(tool.id)} style={btnPrimary}>Mark Ordered</button>
-              <button onClick={() => removeFromReorderQueue(tool.id)} style={btn}>Remove</button>
+              <span className="toolbar">
+                <button className="btn btn-success" onClick={() => markOrdered(t.id)}>Mark Ordered</button>
+                <button className="btn" onClick={() => removeFromQueue(t.id)}>Remove</button>
+              </span>
             </li>
           ))}
         </ul>
-      )}
+      </div>
 
       {/* Pending Orders */}
-      <h2 style={{ marginTop: 28 }}>🧾 Pending Orders</h2>
-      {pendingOrders.length === 0 ? (
-        <p>No pending orders.</p>
-      ) : (
-        <ul style={{ paddingLeft: 18 }}>
-          {pendingOrders.map((order) => (
-            <li key={order.orderId} style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 8 }}>
+      <div className="card" style={{ marginTop: 14 }}>
+        <div style={{ padding: 16, borderBottom: "1px solid var(--border)" }}>
+          <strong>🧾 Pending Orders</strong>
+        </div>
+        <ul style={{ listStyle: "none", margin: 0, padding: 16 }}>
+          {orders.length === 0 && <li className="subtle">No pending orders.</li>}
+          {orders.map((o) => (
+            <li
+              key={o.orderId}
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                padding: "10px 0",
+                borderBottom: "1px dashed var(--border)",
+              }}
+            >
               <span>
-                <strong>{order.name}</strong> — Ordered:{" "}
-                <em>{new Date(order.orderedAt).toLocaleString()}</em>
+                <strong>{o.name}</strong> — Ordered{" "}
+                <em className="subtle">{new Date(o.orderedAt).toLocaleString()}</em>
               </span>
-              <button onClick={() => markReceived(order.orderId)} style={btnPrimary}>Mark Received</button>
-              <button onClick={() => undoOrdered(order.orderId)} style={btn}>Undo</button>
-              <button onClick={() => removePending(order.orderId)} style={btnDanger}>Remove</button>
+              <span className="toolbar">
+                <button className="btn btn-success" onClick={() => markReceived(o.orderId)}>Received</button>
+                <button className="btn" onClick={() => undoOrdered(o.orderId)}>Undo</button>
+                <button className="btn btn-danger" onClick={() => removePending(o.orderId)}>Remove</button>
+              </span>
             </li>
           ))}
         </ul>
+      </div>
+
+      {/* Toast */}
+      {toast && (
+        <div className="toast">
+          <span>✅</span>
+          <span>{toast}</span>
+        </div>
+      )}
+
+      {/* Footer mini metrics */}
+      <div style={{ marginTop: 12, color: "var(--muted)", fontSize: 12 }}>
+        Total Qty: <strong>{totalQty}</strong> • Inventory Value:{" "}
+        <strong>{money(totalValue)}</strong>
+      </div>
+
+      {/* DETAILS MODAL */}
+      {isModalOpen && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,.35)",
+            display: "grid",
+            placeItems: "center",
+            zIndex: 50,
+          }}
+          onClick={() => setModalOpen(false)}
+        >
+          <div
+            className="card"
+            style={{ width: "min(760px, 92vw)", padding: 16 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <h3 style={{ margin: 0 }}>Tool Details</h3>
+              <button className="btn" onClick={() => setModalOpen(false)}>Close</button>
+            </div>
+
+            <div
+              className="form-grid"
+              style={{ marginTop: 12, gridTemplateColumns: "1.2fr 1fr 1fr" }}
+            >
+              <Input label="Tool Name" value={modal.name} onChange={(v) => setModal({ ...modal, name: v })} />
+              <Input label="Manufacturer" value={modal.manufacturer} onChange={(v) => setModal({ ...modal, manufacturer: v })} />
+              <Input label="Part Number" value={modal.partNumber} onChange={(v) => setModal({ ...modal, partNumber: v })} />
+              <div style={{ gridColumn: "1 / -1" }}>
+                <Input label="Description" value={modal.description} onChange={(v) => setModal({ ...modal, description: v })} />
+              </div>
+
+              <Input label="Quantity" type="number" value={modal.quantity} onChange={(v) => setModal({ ...modal, quantity: v })} />
+              <Input label="Low Threshold" type="number" value={modal.threshold} onChange={(v) => setModal({ ...modal, threshold: v })} />
+              <Input label="Price (USD)" type="number" step="0.01" value={modal.price} onChange={(v) => setModal({ ...modal, price: v })} />
+
+              <Input label="Vendor Purchased From" value={modal.vendor} onChange={(v) => setModal({ ...modal, vendor: v })} />
+              <div style={{ gridColumn: "1 / -1" }}>
+                <Input
+                  label="Projects Used On (comma separated)"
+                  value={modal.projects}
+                  onChange={(v) => setModal({ ...modal, projects: v })}
+                />
+              </div>
+            </div>
+
+            <div className="toolbar" style={{ marginTop: 12 }}>
+              <button className="btn" onClick={() => setModalOpen(false)}>Cancel</button>
+              <button className="btn btn-primary" onClick={saveDetails}>Save Details</button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
 }
-
-/* ---------- Tiny UI helpers ---------- */
-function Metric({ label, value }) {
-  return (
-    <div style={{
-      border: "1px solid #eee",
-      borderRadius: 8,
-      padding: "10px 12px",
-      background: "#fafafa",
-      minWidth: 140
-    }}>
-      <div style={{ fontSize: 12, color: "#6b7280" }}>{label}</div>
-      <div style={{ fontSize: 20, fontWeight: "bold" }}>{value}</div>
-    </div>
-  );
-}
-
-const btn = {
-  border: "1px solid #ccc",
-  padding: "6px 10px",
-  borderRadius: 6,
-  cursor: "pointer",
-  background: "#fff",
-};
-const btnPrimary = {
-  ...btn,
-  background: "#111827",
-  color: "#fff",
-  border: "1px solid #111827",
-};
-const btnDanger = {
-  ...btn,
-  background: "crimson",
-  color: "#fff",
-  border: "1px solid crimson",
-};
