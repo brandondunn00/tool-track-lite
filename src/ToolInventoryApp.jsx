@@ -1,6 +1,17 @@
+// src/ToolInventoryApp.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import "./modern-light.css";
 import LocationSection from "./LocationSection";
+import { LS, load, save } from "./storage.old";
+
+/* ---------------- Small helpers ---------------- */
+function debounce(fn, ms) {
+  let t;
+  return (...args) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...args), ms);
+  };
+}
 
 /* ---------------- Taxonomy ---------------- */
 const MACHINE_GROUPS_BASE = ["", "Milling", "Swiss", "Lathe", "Wire EDM", "Inspection", "General", "Other…"];
@@ -67,7 +78,7 @@ function SelectWithOther({ label, value, setValue, baseOptions }) {
   );
 }
 
-/* ---------------- Helpers ---------------- */
+/* ---------------- Formatters & charts ---------------- */
 const money = (v) =>
   Number(v || 0).toLocaleString("en-US", {
     style: "currency",
@@ -95,11 +106,11 @@ function makeHistory(qty = 0, threshold = 0) {
   }).reverse();
 }
 
-/* ---------------- Persistence keys ---------------- */
-const LS_KEYS = { tools: "ttl_tools", queue: "ttl_queue", orders: "ttl_orders" };
-
 /* ---------------- Main ---------------- */
 export default function ToolInventoryApp() {
+  // hydration guard
+  const [hydrated, setHydrated] = useState(false);
+
   const [tools, setTools] = useState([]);
   const [queue, setQueue] = useState([]);
   const [orders, setOrders] = useState([]);
@@ -138,8 +149,29 @@ export default function ToolInventoryApp() {
     toolType: "",
   });
 
-  // NEW: Inventory modal (same style as details)
+  // Inventory modal
   const [isInventoryOpen, setInventoryOpen] = useState(false);
+
+  // Pull History (admin)
+  const [isHistoryOpen, setHistoryOpen] = useState(false);
+  const [tx, setTx] = useState([]);
+  const [txSearch, setTxSearch] = useState("");
+  const [txJob, setTxJob] = useState("");
+
+  // Analytics modal (2 tabs)
+  const [isAnalyticsOpen, setAnalyticsOpen] = useState(false);
+  const [analyticsTab, setAnalyticsTab] = useState("overview"); // "overview" | "risk"
+  const [analyticsTx, setAnalyticsTx] = useState([]);
+
+  // Debounced rolling backup snapshot
+  const saveSnapshot = useMemo(
+    () =>
+      debounce((payload) => {
+        const snap = { ...payload, ts: new Date().toISOString() };
+        save(LS.backup, snap);
+      }, 500),
+    []
+  );
 
   const note = (msg) => {
     setToast(msg);
@@ -150,9 +182,9 @@ export default function ToolInventoryApp() {
   /* ---------------- Load from localStorage on mount ---------------- */
   useEffect(() => {
     try {
-      const t = JSON.parse(localStorage.getItem(LS_KEYS.tools) || "[]");
-      const q = JSON.parse(localStorage.getItem(LS_KEYS.queue) || "[]");
-      const o = JSON.parse(localStorage.getItem(LS_KEYS.orders) || "[]");
+      const t = load(LS.tools, []);
+      const q = load(LS.queue, []);
+      const o = load(LS.orders, []);
       const norm = (arr) =>
         (arr || []).map((x) => ({
           id: x.id ?? Date.now() + Math.random(),
@@ -181,13 +213,30 @@ export default function ToolInventoryApp() {
           orderedAt: ord.orderedAt ?? new Date().toISOString(),
         }))
       );
-    } catch { /* ignore */ }
+    } finally {
+      setHydrated(true); // *** critical: only save after this is true
+    }
   }, []);
 
-  /* ---------------- Save to localStorage whenever data changes ---------------- */
-  useEffect(() => { localStorage.setItem(LS_KEYS.tools, JSON.stringify(tools)); }, [tools]);
-  useEffect(() => { localStorage.setItem(LS_KEYS.queue, JSON.stringify(queue)); }, [queue]);
-  useEffect(() => { localStorage.setItem(LS_KEYS.orders, JSON.stringify(orders)); }, [orders]);
+  /* ---------------- Save to localStorage (guarded by hydrated) ---------------- */
+  useEffect(() => {
+    if (!hydrated) return;
+    save(LS.tools, tools);
+  }, [tools, hydrated]);
+  useEffect(() => {
+    if (!hydrated) return;
+    save(LS.queue, queue);
+  }, [queue, hydrated]);
+  useEffect(() => {
+    if (!hydrated) return;
+    save(LS.orders, orders);
+  }, [orders, hydrated]);
+
+  // Rolling snapshot
+  useEffect(() => {
+    if (!hydrated) return;
+    saveSnapshot({ tools, queue, orders });
+  }, [tools, queue, orders, hydrated, saveSnapshot]);
 
   /* ---------------- Derived ---------------- */
   const totalQty = tools.reduce((a, t) => a + (t.quantity || 0), 0);
@@ -220,6 +269,167 @@ export default function ToolInventoryApp() {
   }, [tools, search, filterMachine, filterType]);
 
   const selected = useMemo(() => tools.find((t) => t.id === selectedId) || null, [tools, selectedId]);
+
+  /* ---------------- Pull History utilities (Admin) ---------------- */
+  const refreshTx = () => {
+    setTx(load(LS.tx, []));
+  };
+  const txFiltered = useMemo(() => {
+    const q = txSearch.trim().toLowerCase();
+    return (tx || []).filter(r => {
+      const hay = [r.name, r.by, r.job].filter(Boolean).join(" ").toLowerCase();
+      const okText = q ? hay.includes(q) : true;
+      const okJob  = txJob ? String(r.job || "").toLowerCase() === txJob.toLowerCase() : true;
+      return okText && okJob;
+    });
+  }, [tx, txSearch, txJob]);
+  const exportTxCSV = () => {
+    const header = ["Timestamp","Tool","Qty","Before","After","Job","By"];
+    const rows = txFiltered.map(r => [
+      new Date(r.at).toLocaleString(),
+      r.name,
+      r.qty,
+      r.before ?? "",
+      r.after ?? "",
+      r.job ?? "",
+      r.by ?? "",
+    ]);
+    const csv = [header, ...rows].map(row => row.map(cell => {
+      const s = String(cell ?? "");
+      return s.includes(",") ? `"${s.replace(/"/g,'""')}"` : s;
+    }).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "pull-history.csv"; a.click(); URL.revokeObjectURL(url);
+  };
+
+  /* ---------------- Analytics (Overview + Risk) ---------------- */
+  const openAnalytics = () => {
+    setAnalyticsOpen(true);
+    setAnalyticsTab("overview");
+    setAnalyticsTx(load(LS.tx, []));
+  };
+  const refreshAnalytics = () => {
+    setAnalyticsTx(load(LS.tx, []));
+  };
+
+  const sumBy = (arr, key, weight = (r) => r.qty || 0) => {
+    const map = new Map();
+    for (const r of arr) {
+      const k = key(r) ?? "";
+      map.set(k, (map.get(k) || 0) + (Number(weight(r)) || 0));
+    }
+    return Array.from(map, ([label, value]) => ({ label, value }));
+  };
+  const topN = (list, n = 8) => [...list].sort((a, b) => b.value - a.value).slice(0, n);
+
+  const txTopTools = useMemo(() => topN(sumBy(analyticsTx, (r) => r.name)), [analyticsTx]);
+  const txTopUsers = useMemo(() => topN(sumBy(analyticsTx, (r) => r.by || "operator")), [analyticsTx]);
+  const txTopJobs  = useMemo(() => topN(sumBy(analyticsTx, (r) => r.job || "N/A")), [analyticsTx]);
+  const txTimeline = useMemo(() => {
+    const days = [...Array(14)].map((_, i) => {
+      const d = new Date(); d.setDate(d.getDate() - (13 - i));
+      const key = d.toISOString().slice(0,10);
+      return { key, label: key, value: 0 };
+    });
+    const idx = new Map(days.map((d, i) => [d.key, i]));
+    (analyticsTx || []).forEach(r => {
+      const k = (r.at || "").slice(0,10);
+      if (idx.has(k)) days[idx.get(k)].value += (r.qty || 0);
+    });
+    return days;
+  }, [analyticsTx]);
+
+  // Risk page
+  const ANALYTICS_WINDOW_DAYS = 30;
+  const perToolRisk = useMemo(() => {
+    const dayKeys = [...Array(ANALYTICS_WINDOW_DAYS)].map((_, i) => {
+      const d = new Date(); d.setDate(d.getDate() - (ANALYTICS_WINDOW_DAYS - 1 - i));
+      return d.toISOString().slice(0,10);
+    });
+    const dayIndex = new Map(dayKeys.map((k, i) => [k, i]));
+    const usageMap = new Map();
+    for (const r of analyticsTx) {
+      const day = (r.at || "").slice(0,10);
+      const idx = dayIndex.get(day);
+      if (idx == null) continue;
+      const key = `${r.toolId ?? r.name}|${r.name}`;
+      if (!usageMap.has(key)) usageMap.set(key, { name: r.name, series: Array(dayKeys.length).fill(0), total: 0, toolId: r.toolId });
+      const u = usageMap.get(key);
+      const q = Number(r.qty || 0);
+      u.series[idx] += q;
+      u.total += q;
+    }
+    const toolByKey = new Map(tools.map(t => [`${t.id}|${t.name}`, t]));
+    const rows = [];
+    for (const [key, u] of usageMap.entries()) {
+      const t = toolByKey.get(key);
+      const onHand = t ? (t.quantity || 0) : 0;
+      const avgDaily = u.total / ANALYTICS_WINDOW_DAYS;
+      const daysOfSupply = avgDaily > 0 ? onHand / avgDaily : Infinity;
+      const projectedOut =
+        avgDaily > 0
+          ? new Date(Date.now() + Math.max(0, daysOfSupply) * 24 * 3600 * 1000).toISOString().slice(0,10)
+          : "—";
+      let risk = "Stable";
+      if (avgDaily > 0) {
+        if (daysOfSupply < 7) risk = "Critical (<7d)";
+        else if (daysOfSupply < 14) risk = "High (7–14d)";
+        else if (daysOfSupply < 30) risk = "Medium (14–30d)";
+        else risk = "Low (>30d)";
+      }
+      rows.push({
+        name: u.name,
+        onHand,
+        avgDaily: Number(avgDaily.toFixed(2)),
+        daysOfSupply: daysOfSupply === Infinity ? "∞" : Number(daysOfSupply.toFixed(1)),
+        projectedOut,
+        series: u.series,
+        tool: t || null,
+        risk,
+      });
+    }
+    for (const t of tools) {
+      const key = `${t.id}|${t.name}`;
+      if (!usageMap.has(key)) {
+        rows.push({
+          name: t.name,
+          onHand: t.quantity || 0,
+          avgDaily: 0,
+          daysOfSupply: "∞",
+          projectedOut: "—",
+          series: Array(ANALYTICS_WINDOW_DAYS).fill(0),
+          tool: t,
+          risk: "Stable",
+        });
+      }
+    }
+    return rows.sort((a, b) => {
+      const ax = a.daysOfSupply === "∞" ? Infinity : a.daysOfSupply;
+      const bx = b.daysOfSupply === "∞" ? Infinity : b.daysOfSupply;
+      return ax - bx;
+    });
+  }, [analyticsTx, tools]);
+
+  const riskBuckets = useMemo(() => {
+    const counts = { "Critical (<7d)": 0, "High (7–14d)": 0, "Medium (14–30d)": 0, "Low (>30d)": 0, Stable: 0 };
+    perToolRisk.forEach(r => { counts[r.risk] = (counts[r.risk] || 0) + 1; });
+    return Object.entries(counts).map(([label, value]) => ({ label, value }));
+  }, [perToolRisk]);
+
+  const exportRiskCSV = () => {
+    const header = ["Tool","On Hand","Avg Daily","Days of Supply","Projected Out"];
+    const rows = perToolRisk.map(r => [r.name, r.onHand, r.avgDaily, r.daysOfSupply, r.projectedOut]);
+    const csv = [header, ...rows].map(row => row.map(cell => {
+      const s = String(cell ?? "");
+      return s.includes(",") ? `"${s.replace(/"/g,'""')}"` : s;
+    }).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "stock-risk.csv"; a.click(); URL.revokeObjectURL(url);
+  };
 
   /* ---------------- Actions ---------------- */
   const validateForm = () => {
@@ -408,6 +618,9 @@ export default function ToolInventoryApp() {
           </label>
           <button className="btn" onClick={exportJSON}>Export JSON</button>
           <button className="btn" onClick={exportCSV}>Export CSV</button>
+          <button className="btn" onClick={() => { refreshTx(); setHistoryOpen(true); }}>Pull History</button>
+          <button className="btn" onClick={openAnalytics}>Analytics</button>
+          <button className="btn" onClick={() => { window.location.hash = "#/operator"; }}>Operator</button>
         </div>
       </div>
 
@@ -557,7 +770,6 @@ export default function ToolInventoryApp() {
                   <h3 style={{ margin: 0 }}>Expected On-Hand Supply</h3>
                   <div className="subtle">Pick an item to see details (vendors, incoming, demand)</div>
                 </div>
-                {/* Open Inventory button at top-right of chart */}
                 <button className="btn" onClick={() => setInventoryOpen(true)} title="Open Inventory">Open Inventory</button>
               </div>
               <svg
@@ -565,7 +777,7 @@ export default function ToolInventoryApp() {
                 height="86"
                 viewBox="0 0 260 86"
                 preserveAspectRatio="none"
-                style={{ background: "#fafafa", border: "1px solid var(--border),", borderRadius: 10, marginTop: 10 }}
+                style={{ background: "#fafafa", border: "1px solid var(--border)", borderRadius: 10, marginTop: 10 }}
               >
                 <path d={sparklinePath(makeHistory(12, 6))} fill="none" stroke="#60a5fa" strokeWidth="2" />
                 <line x1="0" x2="260" y1="70" y2="70" stroke="#f59e0b" strokeDasharray="4 4" strokeWidth="1" />
@@ -574,7 +786,6 @@ export default function ToolInventoryApp() {
             </>
           ) : (
             <>
-              {/* Header with button */}
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
                 <div>
                   <h3 style={{ margin: 0 }}>{selected.name}</h3>
@@ -647,6 +858,11 @@ export default function ToolInventoryApp() {
       {/* Toast */}
       {toast && <div className="toast"><span>✅</span><span>{toast}</span></div>}
 
+      {/* Footer mini metrics */}
+      <div style={{ marginTop: 12, color: "var(--muted)", fontSize: 12 }}>
+        Total Qty: <strong>{totalQty}</strong> • Inventory Value: <strong>{money(totalValue)}</strong>
+      </div>
+
       {/* DETAILS MODAL */}
       {isModalOpen && (
         <div
@@ -694,7 +910,7 @@ export default function ToolInventoryApp() {
         </div>
       )}
 
-      {/* NEW: INVENTORY MODAL */}
+      {/* INVENTORY MODAL */}
       {isInventoryOpen && (
         <div
           style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.35)", display: "grid", placeItems: "center", zIndex: 60 }}
@@ -779,11 +995,293 @@ export default function ToolInventoryApp() {
           </div>
         </div>
       )}
+
+      {/* ADMIN: PULL HISTORY MODAL */}
+      {isHistoryOpen && (
+        <div
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.35)", display: "grid", placeItems: "center", zIndex: 70 }}
+          onClick={() => setHistoryOpen(false)}
+        >
+          <div
+            className="card"
+            style={{ width: "min(1100px, 96vw)", maxHeight: "86vh", padding: 16, display: "flex", flexDirection: "column" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+              <h3 style={{ margin: 0 }}>Pull History</h3>
+              <div className="toolbar" style={{ gap: 8, flexWrap: "wrap" }}>
+                <div className="input" style={{ minWidth: 220 }}>
+                  <label>Search</label>
+                  <input
+                    placeholder="Search tool / user / job…"
+                    value={txSearch}
+                    onChange={(e) => setTxSearch(e.target.value)}
+                  />
+                </div>
+                <div className="input" style={{ minWidth: 160 }}>
+                  <label>Job #</label>
+                  <input
+                    placeholder="Exact job #"
+                    value={txJob}
+                    onChange={(e) => setTxJob(e.target.value)}
+                  />
+                </div>
+                <button className="btn" onClick={exportTxCSV}>Export CSV</button>
+                <button className="btn" onClick={() => { refreshTx(); }}>Refresh</button>
+                <button className="btn" onClick={() => setHistoryOpen(false)}>Close</button>
+              </div>
+            </div>
+
+            {/* Table */}
+            <div style={{ marginTop: 12, display: "flex", flexDirection: "column", minHeight: 0 }}>
+              <div className="table-wrap" style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
+                <div className="table-scroll" style={{ flex: 1, overflow: "auto" }}>
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th style={{ width: "26%" }}>Time</th>
+                        <th style={{ width: "32%" }}>Tool</th>
+                        <th>Qty</th>
+                        <th>Before → After</th>
+                        <th>Job #</th>
+                        <th>By</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {!txFiltered.length && (
+                        <tr><td colSpan={6} className="subtle">No history yet.</td></tr>
+                      )}
+                      {txFiltered.map((r) => (
+                        <tr key={r.id}>
+                          <td>{new Date(r.at).toLocaleString()}</td>
+                          <td><strong>{r.name}</strong></td>
+                          <td>{r.qty}</td>
+                          <td>{(r.before ?? "")} → {(r.after ?? "")}</td>
+                          <td>{r.job || <span className="subtle">—</span>}</td>
+                          <td>{r.by || "operator"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            <div className="toolbar" style={{ marginTop: 12, justifyContent: "flex-end" }}>
+              <button className="btn" onClick={() => setHistoryOpen(false)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ADMIN: ANALYTICS MODAL (2 pages) */}
+      {isAnalyticsOpen && (
+        <div
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.35)", display: "grid", placeItems: "center", zIndex: 80 }}
+          onClick={() => setAnalyticsOpen(false)}
+        >
+          <div
+            className="card"
+            style={{ width: "min(1100px, 96vw)", maxHeight: "86vh", padding: 16, display: "flex", flexDirection: "column" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+              <h3 style={{ margin: 0 }}>Analytics</h3>
+              <div className="toolbar" style={{ gap: 8, flexWrap: "wrap" }}>
+                <button className="btn" onClick={refreshAnalytics}>Refresh</button>
+                <button className="btn" onClick={() => setAnalyticsOpen(false)}>Close</button>
+              </div>
+            </div>
+
+            {/* Tabs */}
+            <div style={{ marginTop: 12, display: "flex", gap: 6 }}>
+              <button className={`pill ${analyticsTab === "overview" ? "active" : ""}`} onClick={() => setAnalyticsTab("overview")}>Overview</button>
+              <button className={`pill ${analyticsTab === "risk" ? "active" : ""}`} onClick={() => setAnalyticsTab("risk")}>Stock Risk</button>
+            </div>
+
+            {/* Content */}
+            {analyticsTab === "overview" ? (
+              <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <AnalyticsCard title="Top Tools (by qty)">
+                  <BarList data={txTopTools} empty="No pulls yet." />
+                </AnalyticsCard>
+
+                <AnalyticsCard title="Top Users (by qty)">
+                  <BarList data={txTopUsers} empty="No pulls yet." />
+                </AnalyticsCard>
+
+                <AnalyticsCard title="Top Jobs (by qty)">
+                  <BarList data={txTopJobs} empty="No pulls yet." />
+                </AnalyticsCard>
+
+                <AnalyticsCard title="Last 14 days (qty pulled)">
+                  <SparkBars data={txTimeline} />
+                </AnalyticsCard>
+              </div>
+            ) : (
+              <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <AnalyticsCard title="Risk Buckets (last 30d usage)">
+                  <BarList data={riskBuckets} empty="No data." />
+                </AnalyticsCard>
+
+                <AnalyticsCard title="Projected Stock-outs (soonest first)">
+                  {perToolRisk.length ? (
+                    <div className="table-wrap">
+                      <div className="table-scroll" style={{ maxHeight: 280 }}>
+                        <table className="table">
+                          <thead>
+                            <tr>
+                              <th style={{ width: "36%" }}>Tool</th>
+                              <th>On Hand</th>
+                              <th>Avg/D</th>
+                              <th>Days Supply</th>
+                              <th>Projected Out</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {perToolRisk.slice(0, 10).map(r => (
+                              <tr key={r.name}>
+                                <td>
+                                  <div style={{ fontWeight: 600 }}>{r.name}</div>
+                                  {r.tool?.partNumber && (
+                                    <div className="subtle">{r.tool.manufacturer || "—"} · {r.tool.partNumber}</div>
+                                  )}
+                                </td>
+                                <td>{r.onHand}</td>
+                                <td>{r.avgDaily}</td>
+                                <td>{r.daysOfSupply}</td>
+                                <td>{r.projectedOut}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div className="toolbar" style={{ marginTop: 8, justifyContent: "flex-end" }}>
+                        <button className="btn" onClick={exportRiskCSV}>Export CSV</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="subtle">No data.</div>
+                  )}
+                </AnalyticsCard>
+
+                <AnalyticsCard title="Tool Trends (last 30d)">
+                  {perToolRisk.length ? (
+                    <div className="table-wrap">
+                      <div className="table-scroll" style={{ maxHeight: 320 }}>
+                        <table className="table">
+                          <thead>
+                            <tr>
+                              <th style={{ width: "36%" }}>Tool</th>
+                              <th>Trend</th>
+                              <th>Avg/D</th>
+                              <th>DoS</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {perToolRisk.slice(0, 8).map(r => (
+                              <tr key={r.name}>
+                                <td>
+                                  <div style={{ fontWeight: 600 }}>{r.name}</div>
+                                  {(r.tool?.machineGroup || r.tool?.toolType) && (
+                                    <div className="subtle" style={{ marginTop: 2 }}>
+                                      {r.tool?.machineGroup || "—"} · {r.tool?.toolType || "—"}
+                                    </div>
+                                  )}
+                                </td>
+                                <td>
+                                  <svg width="180" height="46" viewBox="0 0 180 46" preserveAspectRatio="none"
+                                       style={{ background: "#fafafa", border: "1px solid var(--border)", borderRadius: 8 }}>
+                                    <path d={sparklinePath(r.series, 180, 46, 4)} fill="none" stroke="#60a5fa" strokeWidth="2" />
+                                  </svg>
+                                </td>
+                                <td>{r.avgDaily}</td>
+                                <td>{r.daysOfSupply}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="subtle">No usage yet.</div>
+                  )}
+                </AnalyticsCard>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-/* ---------------- Small utilities ---------------- */
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+/* ---------------- Presentational helpers ---------------- */
+function AnalyticsCard({ title, children }) {
+  return (
+    <div className="card" style={{ padding: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+        <strong>{title}</strong>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function BarList({ data, empty = "No data." }) {
+  if (!data?.length) return <div className="subtle">{empty}</div>;
+  const max = Math.max(...data.map(d => d.value || 0)) || 1;
+  return (
+    <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 8 }}>
+      {data.map((d) => (
+        <li key={d.label} style={{ display: "grid", gridTemplateColumns: "1fr auto", alignItems: "center", gap: 12 }}>
+          <div style={{ display: "grid", gap: 6 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.label}</div>
+            <div className="progress" style={{ height: 10 }}>
+              <span style={{ width: `${Math.round((d.value / max) * 100)}%` }} />
+            </div>
+          </div>
+          <div style={{ fontWeight: 700 }}>{d.value}</div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function SparkBars({ data }) {
+  const max = Math.max(...(data?.map(d => d.value) || [0])) || 1;
+  if (!data?.length) return <div className="subtle">No data.</div>;
+  return (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: `repeat(${data.length}, 1fr)`,
+        alignItems: "end",
+        gap: 4,
+        height: 120,
+        padding: 8,
+        background: "#fafafa",
+        border: "1px solid var(--border)",
+        borderRadius: 10
+      }}
+    >
+      {data.map((d) => (
+        <div key={d.label} title={`${d.label} — ${d.value}`} style={{ display: "grid", alignItems: "end" }}>
+          <div
+            style={{
+              height: `${(d.value / max) * 100}%`,
+              borderRadius: 6,
+              background: "linear-gradient(90deg, #93c5fd, #3b82f6)",
+              border: "1px solid rgba(0,0,0,.06)"
+            }}
+          />
+          <div className="subtle" style={{ fontSize: 10, marginTop: 4, textAlign: "center" }}>
+            {d.label.slice(5)}{/* mm-dd */}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
 }
