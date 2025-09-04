@@ -1,19 +1,10 @@
 // src/ToolInventoryApp.jsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import "./modern-light.css";
 import LocationSection from "./LocationSection";
-import { LS, load, save } from "./storage.old";
+import { LS, load, save } from "./storage";
 
-/* ---------------- Small helpers ---------------- */
-function debounce(fn, ms) {
-  let t;
-  return (...args) => {
-    clearTimeout(t);
-    t = setTimeout(() => fn(...args), ms);
-  };
-}
-
-/* ---------------- Taxonomy ---------------- */
+/* -------- Taxonomy -------- */
 const MACHINE_GROUPS_BASE = ["", "Milling", "Swiss", "Lathe", "Wire EDM", "Inspection", "General", "Other…"];
 const TOOL_TYPES_BASE = [
   "", "Endmill", "Drill", "Tap", "Reamer",
@@ -21,7 +12,7 @@ const TOOL_TYPES_BASE = [
   "Collet", "Tap Holder", "Tool Holder", "Fixture", "Gage", "Other…"
 ];
 
-/* ---------------- Reusable inputs ---------------- */
+/* -------- Inputs -------- */
 function Input({ label, value, onChange, error, ...props }) {
   return (
     <div className="input">
@@ -48,7 +39,6 @@ function Select({ label, value, onChange, options, ...props }) {
     </div>
   );
 }
-/** Dropdown that reveals a free-text box when “Other…” is chosen. */
 function SelectWithOther({ label, value, setValue, baseOptions }) {
   const isOther = value && !baseOptions.includes(value);
   const selValue = isOther ? "Other…" : (value ?? "");
@@ -59,7 +49,7 @@ function SelectWithOther({ label, value, setValue, baseOptions }) {
         value={selValue}
         onChange={(v) => {
           if (v === "Other…") {
-            setValue(isOther ? value : ""); // switch to custom
+            setValue(isOther ? value : "");
           } else {
             setValue(v);
           }
@@ -78,7 +68,7 @@ function SelectWithOther({ label, value, setValue, baseOptions }) {
   );
 }
 
-/* ---------------- Formatters & charts ---------------- */
+/* -------- Helpers -------- */
 const money = (v) =>
   Number(v || 0).toLocaleString("en-US", {
     style: "currency",
@@ -98,7 +88,7 @@ function sparklinePath(points, w = 260, h = 80, pad = 6) {
   return points.map((v, i, a) => `${i === 0 ? "M" : "L"} ${x(i, a.length).toFixed(1)} ${y(v).toFixed(1)}`).join(" ");
 }
 function makeHistory(qty = 0, threshold = 0) {
-  const base = Math.max(threshold * 1.2, 10);
+  const base = Math.max((threshold || 0) * 1.2, 10);
   const step = Math.max(1, Math.round((qty || 6) / 6));
   return Array.from({ length: 12 }, (_, i) => {
     const decay = Math.max(0, qty - i * step);
@@ -106,11 +96,8 @@ function makeHistory(qty = 0, threshold = 0) {
   }).reverse();
 }
 
-/* ---------------- Main ---------------- */
+/* -------- Main Admin -------- */
 export default function ToolInventoryApp() {
-  // hydration guard
-  const [hydrated, setHydrated] = useState(false);
-
   const [tools, setTools] = useState([]);
   const [queue, setQueue] = useState([]);
   const [orders, setOrders] = useState([]);
@@ -121,65 +108,31 @@ export default function ToolInventoryApp() {
     machineGroup: "", toolType: "",
   });
   const [formErrors, setFormErrors] = useState({});
-
   const [toast, setToast] = useState("");
-  const [search, setSearch] = useState("");
 
-  // filters
+  const [search, setSearch] = useState("");
   const [filterMachine, setFilterMachine] = useState("");
   const [filterType, setFilterType] = useState("");
-
   const [selectedId, setSelectedId] = useState(null);
 
-  // Details modal
   const [isModalOpen, setModalOpen] = useState(false);
   const [modal, setModal] = useState({
-    id: null,
-    name: "",
-    manufacturer: "",
-    partNumber: "",
-    description: "",
-    quantity: 0,
-    threshold: 0,
-    price: 0,
-    vendor: "",
-    projects: "",
-    location: {},
-    machineGroup: "",
-    toolType: "",
+    id: null, name: "", manufacturer: "", partNumber: "", description: "",
+    quantity: 0, threshold: 0, price: 0, vendor: "", projects: "",
+    location: {}, machineGroup: "", toolType: "",
   });
-
-  // Inventory modal
   const [isInventoryOpen, setInventoryOpen] = useState(false);
 
-  // Pull History (admin)
-  const [isHistoryOpen, setHistoryOpen] = useState(false);
-  const [tx, setTx] = useState([]);
-  const [txSearch, setTxSearch] = useState("");
-  const [txJob, setTxJob] = useState("");
-
-  // Analytics modal (2 tabs)
-  const [isAnalyticsOpen, setAnalyticsOpen] = useState(false);
-  const [analyticsTab, setAnalyticsTab] = useState("overview"); // "overview" | "risk"
-  const [analyticsTx, setAnalyticsTx] = useState([]);
-
-  // Debounced rolling backup snapshot
-  const saveSnapshot = useMemo(
-    () =>
-      debounce((payload) => {
-        const snap = { ...payload, ts: new Date().toISOString() };
-        save(LS.backup, snap);
-      }, 500),
-    []
-  );
+  // SAFEGUARD: prevent saving empty arrays before load completes (esp. StrictMode)
+  const loadedRef = useRef(false);
 
   const note = (msg) => {
     setToast(msg);
     clearTimeout(note._t);
-    note._t = setTimeout(() => setToast(""), 2400);
+    note._t = setTimeout(() => setToast(""), 2000);
   };
 
-  /* ---------------- Load from localStorage on mount ---------------- */
+  /* ---- Load once ---- */
   useEffect(() => {
     try {
       const t = load(LS.tools, []);
@@ -213,36 +166,20 @@ export default function ToolInventoryApp() {
           orderedAt: ord.orderedAt ?? new Date().toISOString(),
         }))
       );
-    } finally {
-      setHydrated(true); // *** critical: only save after this is true
-    }
+    } catch {/* ignore */}
+    // Defer hydration so save-effects don't run with [] on the initial paint
+    setTimeout(() => { loadedRef.current = true; }, 0);
   }, []);
 
-  /* ---------------- Save to localStorage (guarded by hydrated) ---------------- */
-  useEffect(() => {
-    if (!hydrated) return;
-    save(LS.tools, tools);
-  }, [tools, hydrated]);
-  useEffect(() => {
-    if (!hydrated) return;
-    save(LS.queue, queue);
-  }, [queue, hydrated]);
-  useEffect(() => {
-    if (!hydrated) return;
-    save(LS.orders, orders);
-  }, [orders, hydrated]);
+  /* ---- Save after load ---- */
+  useEffect(() => { if (loadedRef.current) save(LS.tools, tools); }, [tools]);
+  useEffect(() => { if (loadedRef.current) save(LS.queue, queue); }, [queue]);
+  useEffect(() => { if (loadedRef.current) save(LS.orders, orders); }, [orders]);
 
-  // Rolling snapshot
-  useEffect(() => {
-    if (!hydrated) return;
-    saveSnapshot({ tools, queue, orders });
-  }, [tools, queue, orders, hydrated, saveSnapshot]);
-
-  /* ---------------- Derived ---------------- */
+  /* ---- Derived ---- */
   const totalQty = tools.reduce((a, t) => a + (t.quantity || 0), 0);
   const totalValue = tools.reduce((a, t) => a + (t.quantity || 0) * (t.price || 0), 0);
 
-  // dynamic filter options include custom values found in data
   const machineFilterOptions = useMemo(() => {
     const s = new Set(MACHINE_GROUPS_BASE);
     tools.forEach(t => t.machineGroup && s.add(t.machineGroup));
@@ -270,168 +207,7 @@ export default function ToolInventoryApp() {
 
   const selected = useMemo(() => tools.find((t) => t.id === selectedId) || null, [tools, selectedId]);
 
-  /* ---------------- Pull History utilities (Admin) ---------------- */
-  const refreshTx = () => {
-    setTx(load(LS.tx, []));
-  };
-  const txFiltered = useMemo(() => {
-    const q = txSearch.trim().toLowerCase();
-    return (tx || []).filter(r => {
-      const hay = [r.name, r.by, r.job].filter(Boolean).join(" ").toLowerCase();
-      const okText = q ? hay.includes(q) : true;
-      const okJob  = txJob ? String(r.job || "").toLowerCase() === txJob.toLowerCase() : true;
-      return okText && okJob;
-    });
-  }, [tx, txSearch, txJob]);
-  const exportTxCSV = () => {
-    const header = ["Timestamp","Tool","Qty","Before","After","Job","By"];
-    const rows = txFiltered.map(r => [
-      new Date(r.at).toLocaleString(),
-      r.name,
-      r.qty,
-      r.before ?? "",
-      r.after ?? "",
-      r.job ?? "",
-      r.by ?? "",
-    ]);
-    const csv = [header, ...rows].map(row => row.map(cell => {
-      const s = String(cell ?? "");
-      return s.includes(",") ? `"${s.replace(/"/g,'""')}"` : s;
-    }).join(",")).join("\n");
-    const blob = new Blob([csv], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = "pull-history.csv"; a.click(); URL.revokeObjectURL(url);
-  };
-
-  /* ---------------- Analytics (Overview + Risk) ---------------- */
-  const openAnalytics = () => {
-    setAnalyticsOpen(true);
-    setAnalyticsTab("overview");
-    setAnalyticsTx(load(LS.tx, []));
-  };
-  const refreshAnalytics = () => {
-    setAnalyticsTx(load(LS.tx, []));
-  };
-
-  const sumBy = (arr, key, weight = (r) => r.qty || 0) => {
-    const map = new Map();
-    for (const r of arr) {
-      const k = key(r) ?? "";
-      map.set(k, (map.get(k) || 0) + (Number(weight(r)) || 0));
-    }
-    return Array.from(map, ([label, value]) => ({ label, value }));
-  };
-  const topN = (list, n = 8) => [...list].sort((a, b) => b.value - a.value).slice(0, n);
-
-  const txTopTools = useMemo(() => topN(sumBy(analyticsTx, (r) => r.name)), [analyticsTx]);
-  const txTopUsers = useMemo(() => topN(sumBy(analyticsTx, (r) => r.by || "operator")), [analyticsTx]);
-  const txTopJobs  = useMemo(() => topN(sumBy(analyticsTx, (r) => r.job || "N/A")), [analyticsTx]);
-  const txTimeline = useMemo(() => {
-    const days = [...Array(14)].map((_, i) => {
-      const d = new Date(); d.setDate(d.getDate() - (13 - i));
-      const key = d.toISOString().slice(0,10);
-      return { key, label: key, value: 0 };
-    });
-    const idx = new Map(days.map((d, i) => [d.key, i]));
-    (analyticsTx || []).forEach(r => {
-      const k = (r.at || "").slice(0,10);
-      if (idx.has(k)) days[idx.get(k)].value += (r.qty || 0);
-    });
-    return days;
-  }, [analyticsTx]);
-
-  // Risk page
-  const ANALYTICS_WINDOW_DAYS = 30;
-  const perToolRisk = useMemo(() => {
-    const dayKeys = [...Array(ANALYTICS_WINDOW_DAYS)].map((_, i) => {
-      const d = new Date(); d.setDate(d.getDate() - (ANALYTICS_WINDOW_DAYS - 1 - i));
-      return d.toISOString().slice(0,10);
-    });
-    const dayIndex = new Map(dayKeys.map((k, i) => [k, i]));
-    const usageMap = new Map();
-    for (const r of analyticsTx) {
-      const day = (r.at || "").slice(0,10);
-      const idx = dayIndex.get(day);
-      if (idx == null) continue;
-      const key = `${r.toolId ?? r.name}|${r.name}`;
-      if (!usageMap.has(key)) usageMap.set(key, { name: r.name, series: Array(dayKeys.length).fill(0), total: 0, toolId: r.toolId });
-      const u = usageMap.get(key);
-      const q = Number(r.qty || 0);
-      u.series[idx] += q;
-      u.total += q;
-    }
-    const toolByKey = new Map(tools.map(t => [`${t.id}|${t.name}`, t]));
-    const rows = [];
-    for (const [key, u] of usageMap.entries()) {
-      const t = toolByKey.get(key);
-      const onHand = t ? (t.quantity || 0) : 0;
-      const avgDaily = u.total / ANALYTICS_WINDOW_DAYS;
-      const daysOfSupply = avgDaily > 0 ? onHand / avgDaily : Infinity;
-      const projectedOut =
-        avgDaily > 0
-          ? new Date(Date.now() + Math.max(0, daysOfSupply) * 24 * 3600 * 1000).toISOString().slice(0,10)
-          : "—";
-      let risk = "Stable";
-      if (avgDaily > 0) {
-        if (daysOfSupply < 7) risk = "Critical (<7d)";
-        else if (daysOfSupply < 14) risk = "High (7–14d)";
-        else if (daysOfSupply < 30) risk = "Medium (14–30d)";
-        else risk = "Low (>30d)";
-      }
-      rows.push({
-        name: u.name,
-        onHand,
-        avgDaily: Number(avgDaily.toFixed(2)),
-        daysOfSupply: daysOfSupply === Infinity ? "∞" : Number(daysOfSupply.toFixed(1)),
-        projectedOut,
-        series: u.series,
-        tool: t || null,
-        risk,
-      });
-    }
-    for (const t of tools) {
-      const key = `${t.id}|${t.name}`;
-      if (!usageMap.has(key)) {
-        rows.push({
-          name: t.name,
-          onHand: t.quantity || 0,
-          avgDaily: 0,
-          daysOfSupply: "∞",
-          projectedOut: "—",
-          series: Array(ANALYTICS_WINDOW_DAYS).fill(0),
-          tool: t,
-          risk: "Stable",
-        });
-      }
-    }
-    return rows.sort((a, b) => {
-      const ax = a.daysOfSupply === "∞" ? Infinity : a.daysOfSupply;
-      const bx = b.daysOfSupply === "∞" ? Infinity : b.daysOfSupply;
-      return ax - bx;
-    });
-  }, [analyticsTx, tools]);
-
-  const riskBuckets = useMemo(() => {
-    const counts = { "Critical (<7d)": 0, "High (7–14d)": 0, "Medium (14–30d)": 0, "Low (>30d)": 0, Stable: 0 };
-    perToolRisk.forEach(r => { counts[r.risk] = (counts[r.risk] || 0) + 1; });
-    return Object.entries(counts).map(([label, value]) => ({ label, value }));
-  }, [perToolRisk]);
-
-  const exportRiskCSV = () => {
-    const header = ["Tool","On Hand","Avg Daily","Days of Supply","Projected Out"];
-    const rows = perToolRisk.map(r => [r.name, r.onHand, r.avgDaily, r.daysOfSupply, r.projectedOut]);
-    const csv = [header, ...rows].map(row => row.map(cell => {
-      const s = String(cell ?? "");
-      return s.includes(",") ? `"${s.replace(/"/g,'""')}"` : s;
-    }).join(",")).join("\n");
-    const blob = new Blob([csv], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = "stock-risk.csv"; a.click(); URL.revokeObjectURL(url);
-  };
-
-  /* ---------------- Actions ---------------- */
+  /* ---- Actions ---- */
   const validateForm = () => {
     const errors = {};
     if (!form.name?.trim()) errors.name = "Tool name is required";
@@ -557,52 +333,7 @@ export default function ToolInventoryApp() {
     reader.readAsText(file);
   };
 
-  // Details modal helpers
-  const openDetails = (tool) => {
-    setModal({
-      id: tool.id,
-      name: tool.name,
-      manufacturer: tool.manufacturer || "",
-      partNumber: tool.partNumber || "",
-      description: tool.description || "",
-      quantity: tool.quantity || 0,
-      threshold: tool.threshold || 0,
-      price: tool.price || 0,
-      vendor: tool.vendor || "",
-      projects: (tool.projects || []).join(", "),
-      location: (tool.location && typeof tool.location === "object") ? tool.location : {},
-      machineGroup: tool.machineGroup || "",
-      toolType: tool.toolType || "",
-    });
-    setModalOpen(true);
-  };
-  const saveDetails = () => {
-    setTools((prev) =>
-      prev.map((t) =>
-        t.id === modal.id
-          ? {
-              ...t,
-              name: modal.name.trim(),
-              manufacturer: modal.manufacturer.trim(),
-              partNumber: modal.partNumber.trim(),
-              description: modal.description.trim(),
-              quantity: Math.max(0, parseInt(modal.quantity, 10) || 0),
-              threshold: Math.max(0, parseInt(modal.threshold, 10) || 0),
-              price: Number(parseFloat(modal.price || 0).toFixed(2)),
-              vendor: modal.vendor.trim(),
-              projects: modal.projects.split(",").map((p) => p.trim()).filter(Boolean),
-              location: (modal.location && typeof modal.location === "object") ? modal.location : {},
-              machineGroup: modal.machineGroup || "",
-              toolType: modal.toolType || "",
-            }
-          : t
-      )
-    );
-    setModalOpen(false);
-    note("Details saved 💾");
-  };
-
-  /* ---------------- UI ---------------- */
+  /* ---- UI ---- */
   return (
     <div className="app">
       {/* Header */}
@@ -618,9 +349,9 @@ export default function ToolInventoryApp() {
           </label>
           <button className="btn" onClick={exportJSON}>Export JSON</button>
           <button className="btn" onClick={exportCSV}>Export CSV</button>
-          <button className="btn" onClick={() => { refreshTx(); setHistoryOpen(true); }}>Pull History</button>
-          <button className="btn" onClick={openAnalytics}>Analytics</button>
-          <button className="btn" onClick={() => { window.location.hash = "#/operator"; }}>Operator</button>
+          <a className="btn" href="#/kitting">Job Kitting</a>
+          <a className="btn" href="#/analytics">Analytics</a>
+          <a className="btn" href="#/operator">Operator</a>
         </div>
       </div>
 
@@ -673,7 +404,7 @@ export default function ToolInventoryApp() {
         </div>
       </div>
 
-      {/* Main layout: table (scrolls) + details */}
+      {/* Main layout */}
       <div className="layout">
         {/* LEFT: Inventory table */}
         <div className="card table-wrap">
@@ -696,7 +427,7 @@ export default function ToolInventoryApp() {
                 {filteredTools.map((t) => {
                   const isLow = (t.quantity || 0) <= (t.threshold || 0);
                   const isZero = (t.quantity || 0) === 0;
-                  const cap = Math.max(t.threshold * 2 || 20, 10);
+                  const cap = Math.max((t.threshold || 0) * 2, 10);
                   const pct = Math.min(100, Math.round(((t.quantity || 0) / cap) * 100));
                   const active = selectedId === t.id;
 
@@ -744,7 +475,17 @@ export default function ToolInventoryApp() {
                           <button className="btn" onClick={(e) => { e.stopPropagation(); updateQty(t.id, -1); }}>-1</button>
                           <button className="btn" onClick={(e) => { e.stopPropagation(); updateQty(t.id, 1); }}>+1</button>
                           <button className="btn" onClick={(e) => { e.stopPropagation(); addToQueue(t); }}>Reorder</button>
-                          <button className="btn" onClick={(e) => { e.stopPropagation(); openDetails(t); }}>Details</button>
+                          <button className="btn" onClick={(e) => {
+                            e.stopPropagation();
+                            setModalOpen(true);
+                            setModal({
+                              id: t.id, name: t.name, manufacturer: t.manufacturer || "", partNumber: t.partNumber || "",
+                              description: t.description || "", quantity: t.quantity || 0, threshold: t.threshold || 0,
+                              price: t.price || 0, vendor: t.vendor || "", projects: (t.projects || []).join(", "),
+                              location: typeof t.location === "object" && t.location ? t.location : {},
+                              machineGroup: t.machineGroup || "", toolType: t.toolType || "",
+                            });
+                          }}>Details</button>
                           <button className="btn btn-danger" onClick={(e) => { e.stopPropagation(); removeTool(t.id); }}>Delete</button>
                         </div>
                       </td>
@@ -773,10 +514,7 @@ export default function ToolInventoryApp() {
                 <button className="btn" onClick={() => setInventoryOpen(true)} title="Open Inventory">Open Inventory</button>
               </div>
               <svg
-                width="100%"
-                height="86"
-                viewBox="0 0 260 86"
-                preserveAspectRatio="none"
+                width="100%" height="86" viewBox="0 0 260 86" preserveAspectRatio="none"
                 style={{ background: "#fafafa", border: "1px solid var(--border)", borderRadius: 10, marginTop: 10 }}
               >
                 <path d={sparklinePath(makeHistory(12, 6))} fill="none" stroke="#60a5fa" strokeWidth="2" />
@@ -813,7 +551,7 @@ export default function ToolInventoryApp() {
               </div>
 
               <div style={{ marginTop: 12 }}>
-                <button className="btn" onClick={() => openDetails(selected)}>Edit Details</button>
+                <button className="btn" onClick={() => setModalOpen(true)}>Edit Details</button>
               </div>
             </>
           )}
@@ -875,7 +613,6 @@ export default function ToolInventoryApp() {
               <button className="btn" onClick={() => setModalOpen(false)}>Close</button>
             </div>
 
-            {/* Primary fields */}
             <div className="form-grid" style={{ marginTop: 12, gridTemplateColumns: "1.2fr 1fr 1fr" }}>
               <Input label="Tool Name" value={modal.name} onChange={(v) => setModal({ ...modal, name: v })} />
               <Input label="Manufacturer" value={modal.manufacturer} onChange={(v) => setModal({ ...modal, manufacturer: v })} />
@@ -897,14 +634,42 @@ export default function ToolInventoryApp() {
               <SelectWithOther label="Tool Type" value={modal.toolType} setValue={(v) => setModal({ ...modal, toolType: v })} baseOptions={TOOL_TYPES_BASE} />
             </div>
 
-            {/* Location Section */}
             <div style={{ marginTop: 12 }}>
               <LocationSection value={modal.location} onChange={(loc) => setModal((m) => ({ ...m, location: loc }))} />
             </div>
 
             <div className="toolbar" style={{ marginTop: 12 }}>
               <button className="btn" onClick={() => setModalOpen(false)}>Cancel</button>
-              <button className="btn btn-primary" onClick={saveDetails}>Save Details</button>
+              <button
+                className="btn btn-primary"
+                onClick={() => {
+                  setTools((prev) =>
+                    prev.map((t) =>
+                      t.id === modal.id
+                        ? {
+                            ...t,
+                            name: modal.name.trim(),
+                            manufacturer: modal.manufacturer.trim(),
+                            partNumber: modal.partNumber.trim(),
+                            description: modal.description.trim(),
+                            quantity: Math.max(0, parseInt(modal.quantity, 10) || 0),
+                            threshold: Math.max(0, parseInt(modal.threshold, 10) || 0),
+                            price: Number(parseFloat(modal.price || 0).toFixed(2)),
+                            vendor: modal.vendor.trim(),
+                            projects: modal.projects.split(",").map((p) => p.trim()).filter(Boolean),
+                            location: (modal.location && typeof modal.location === "object") ? modal.location : {},
+                            machineGroup: modal.machineGroup || "",
+                            toolType: modal.toolType || "",
+                          }
+                        : t
+                    )
+                  );
+                  setModalOpen(false);
+                  note("Details saved 💾");
+                }}
+              >
+                Save Details
+              </button>
             </div>
           </div>
         </div>
@@ -916,12 +681,7 @@ export default function ToolInventoryApp() {
           style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.35)", display: "grid", placeItems: "center", zIndex: 60 }}
           onClick={() => setInventoryOpen(false)}
         >
-          <div
-            className="card"
-            style={{ width: "min(1100px, 94vw)", maxHeight: "86vh", padding: 16, display: "flex", flexDirection: "column" }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Modal header */}
+          <div className="card" style={{ width: "min(1100px, 94vw)", maxHeight: "86vh", padding: 16, display: "flex", flexDirection: "column" }} onClick={(e) => e.stopPropagation()}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
               <h3 style={{ margin: 0 }}>Inventory</h3>
               <div className="toolbar" style={{ gap: 8, flexWrap: "wrap" }}>
@@ -933,7 +693,6 @@ export default function ToolInventoryApp() {
               </div>
             </div>
 
-            {/* Table body */}
             <div style={{ marginTop: 12, display: "flex", flexDirection: "column", minHeight: 0 }}>
               <div className="table-wrap" style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
                 <div className="table-scroll" style={{ flex: 1, overflow: "auto" }}>
@@ -995,293 +754,6 @@ export default function ToolInventoryApp() {
           </div>
         </div>
       )}
-
-      {/* ADMIN: PULL HISTORY MODAL */}
-      {isHistoryOpen && (
-        <div
-          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.35)", display: "grid", placeItems: "center", zIndex: 70 }}
-          onClick={() => setHistoryOpen(false)}
-        >
-          <div
-            className="card"
-            style={{ width: "min(1100px, 96vw)", maxHeight: "86vh", padding: 16, display: "flex", flexDirection: "column" }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Header */}
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-              <h3 style={{ margin: 0 }}>Pull History</h3>
-              <div className="toolbar" style={{ gap: 8, flexWrap: "wrap" }}>
-                <div className="input" style={{ minWidth: 220 }}>
-                  <label>Search</label>
-                  <input
-                    placeholder="Search tool / user / job…"
-                    value={txSearch}
-                    onChange={(e) => setTxSearch(e.target.value)}
-                  />
-                </div>
-                <div className="input" style={{ minWidth: 160 }}>
-                  <label>Job #</label>
-                  <input
-                    placeholder="Exact job #"
-                    value={txJob}
-                    onChange={(e) => setTxJob(e.target.value)}
-                  />
-                </div>
-                <button className="btn" onClick={exportTxCSV}>Export CSV</button>
-                <button className="btn" onClick={() => { refreshTx(); }}>Refresh</button>
-                <button className="btn" onClick={() => setHistoryOpen(false)}>Close</button>
-              </div>
-            </div>
-
-            {/* Table */}
-            <div style={{ marginTop: 12, display: "flex", flexDirection: "column", minHeight: 0 }}>
-              <div className="table-wrap" style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
-                <div className="table-scroll" style={{ flex: 1, overflow: "auto" }}>
-                  <table className="table">
-                    <thead>
-                      <tr>
-                        <th style={{ width: "26%" }}>Time</th>
-                        <th style={{ width: "32%" }}>Tool</th>
-                        <th>Qty</th>
-                        <th>Before → After</th>
-                        <th>Job #</th>
-                        <th>By</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {!txFiltered.length && (
-                        <tr><td colSpan={6} className="subtle">No history yet.</td></tr>
-                      )}
-                      {txFiltered.map((r) => (
-                        <tr key={r.id}>
-                          <td>{new Date(r.at).toLocaleString()}</td>
-                          <td><strong>{r.name}</strong></td>
-                          <td>{r.qty}</td>
-                          <td>{(r.before ?? "")} → {(r.after ?? "")}</td>
-                          <td>{r.job || <span className="subtle">—</span>}</td>
-                          <td>{r.by || "operator"}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
-
-            <div className="toolbar" style={{ marginTop: 12, justifyContent: "flex-end" }}>
-              <button className="btn" onClick={() => setHistoryOpen(false)}>Close</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ADMIN: ANALYTICS MODAL (2 pages) */}
-      {isAnalyticsOpen && (
-        <div
-          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.35)", display: "grid", placeItems: "center", zIndex: 80 }}
-          onClick={() => setAnalyticsOpen(false)}
-        >
-          <div
-            className="card"
-            style={{ width: "min(1100px, 96vw)", maxHeight: "86vh", padding: 16, display: "flex", flexDirection: "column" }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Header */}
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-              <h3 style={{ margin: 0 }}>Analytics</h3>
-              <div className="toolbar" style={{ gap: 8, flexWrap: "wrap" }}>
-                <button className="btn" onClick={refreshAnalytics}>Refresh</button>
-                <button className="btn" onClick={() => setAnalyticsOpen(false)}>Close</button>
-              </div>
-            </div>
-
-            {/* Tabs */}
-            <div style={{ marginTop: 12, display: "flex", gap: 6 }}>
-              <button className={`pill ${analyticsTab === "overview" ? "active" : ""}`} onClick={() => setAnalyticsTab("overview")}>Overview</button>
-              <button className={`pill ${analyticsTab === "risk" ? "active" : ""}`} onClick={() => setAnalyticsTab("risk")}>Stock Risk</button>
-            </div>
-
-            {/* Content */}
-            {analyticsTab === "overview" ? (
-              <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                <AnalyticsCard title="Top Tools (by qty)">
-                  <BarList data={txTopTools} empty="No pulls yet." />
-                </AnalyticsCard>
-
-                <AnalyticsCard title="Top Users (by qty)">
-                  <BarList data={txTopUsers} empty="No pulls yet." />
-                </AnalyticsCard>
-
-                <AnalyticsCard title="Top Jobs (by qty)">
-                  <BarList data={txTopJobs} empty="No pulls yet." />
-                </AnalyticsCard>
-
-                <AnalyticsCard title="Last 14 days (qty pulled)">
-                  <SparkBars data={txTimeline} />
-                </AnalyticsCard>
-              </div>
-            ) : (
-              <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                <AnalyticsCard title="Risk Buckets (last 30d usage)">
-                  <BarList data={riskBuckets} empty="No data." />
-                </AnalyticsCard>
-
-                <AnalyticsCard title="Projected Stock-outs (soonest first)">
-                  {perToolRisk.length ? (
-                    <div className="table-wrap">
-                      <div className="table-scroll" style={{ maxHeight: 280 }}>
-                        <table className="table">
-                          <thead>
-                            <tr>
-                              <th style={{ width: "36%" }}>Tool</th>
-                              <th>On Hand</th>
-                              <th>Avg/D</th>
-                              <th>Days Supply</th>
-                              <th>Projected Out</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {perToolRisk.slice(0, 10).map(r => (
-                              <tr key={r.name}>
-                                <td>
-                                  <div style={{ fontWeight: 600 }}>{r.name}</div>
-                                  {r.tool?.partNumber && (
-                                    <div className="subtle">{r.tool.manufacturer || "—"} · {r.tool.partNumber}</div>
-                                  )}
-                                </td>
-                                <td>{r.onHand}</td>
-                                <td>{r.avgDaily}</td>
-                                <td>{r.daysOfSupply}</td>
-                                <td>{r.projectedOut}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                      <div className="toolbar" style={{ marginTop: 8, justifyContent: "flex-end" }}>
-                        <button className="btn" onClick={exportRiskCSV}>Export CSV</button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="subtle">No data.</div>
-                  )}
-                </AnalyticsCard>
-
-                <AnalyticsCard title="Tool Trends (last 30d)">
-                  {perToolRisk.length ? (
-                    <div className="table-wrap">
-                      <div className="table-scroll" style={{ maxHeight: 320 }}>
-                        <table className="table">
-                          <thead>
-                            <tr>
-                              <th style={{ width: "36%" }}>Tool</th>
-                              <th>Trend</th>
-                              <th>Avg/D</th>
-                              <th>DoS</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {perToolRisk.slice(0, 8).map(r => (
-                              <tr key={r.name}>
-                                <td>
-                                  <div style={{ fontWeight: 600 }}>{r.name}</div>
-                                  {(r.tool?.machineGroup || r.tool?.toolType) && (
-                                    <div className="subtle" style={{ marginTop: 2 }}>
-                                      {r.tool?.machineGroup || "—"} · {r.tool?.toolType || "—"}
-                                    </div>
-                                  )}
-                                </td>
-                                <td>
-                                  <svg width="180" height="46" viewBox="0 0 180 46" preserveAspectRatio="none"
-                                       style={{ background: "#fafafa", border: "1px solid var(--border)", borderRadius: 8 }}>
-                                    <path d={sparklinePath(r.series, 180, 46, 4)} fill="none" stroke="#60a5fa" strokeWidth="2" />
-                                  </svg>
-                                </td>
-                                <td>{r.avgDaily}</td>
-                                <td>{r.daysOfSupply}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="subtle">No usage yet.</div>
-                  )}
-                </AnalyticsCard>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ---------------- Presentational helpers ---------------- */
-function AnalyticsCard({ title, children }) {
-  return (
-    <div className="card" style={{ padding: 12 }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-        <strong>{title}</strong>
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function BarList({ data, empty = "No data." }) {
-  if (!data?.length) return <div className="subtle">{empty}</div>;
-  const max = Math.max(...data.map(d => d.value || 0)) || 1;
-  return (
-    <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 8 }}>
-      {data.map((d) => (
-        <li key={d.label} style={{ display: "grid", gridTemplateColumns: "1fr auto", alignItems: "center", gap: 12 }}>
-          <div style={{ display: "grid", gap: 6 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.label}</div>
-            <div className="progress" style={{ height: 10 }}>
-              <span style={{ width: `${Math.round((d.value / max) * 100)}%` }} />
-            </div>
-          </div>
-          <div style={{ fontWeight: 700 }}>{d.value}</div>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function SparkBars({ data }) {
-  const max = Math.max(...(data?.map(d => d.value) || [0])) || 1;
-  if (!data?.length) return <div className="subtle">No data.</div>;
-  return (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: `repeat(${data.length}, 1fr)`,
-        alignItems: "end",
-        gap: 4,
-        height: 120,
-        padding: 8,
-        background: "#fafafa",
-        border: "1px solid var(--border)",
-        borderRadius: 10
-      }}
-    >
-      {data.map((d) => (
-        <div key={d.label} title={`${d.label} — ${d.value}`} style={{ display: "grid", alignItems: "end" }}>
-          <div
-            style={{
-              height: `${(d.value / max) * 100}%`,
-              borderRadius: 6,
-              background: "linear-gradient(90deg, #93c5fd, #3b82f6)",
-              border: "1px solid rgba(0,0,0,.06)"
-            }}
-          />
-          <div className="subtle" style={{ fontSize: 10, marginTop: 4, textAlign: "center" }}>
-            {d.label.slice(5)}{/* mm-dd */}
-          </div>
-        </div>
-      ))}
     </div>
   );
 }
