@@ -757,3 +757,13 @@ export default function ToolInventoryApp() {
     </div>
   );
 }
+// anywhere in ToolInventoryApp.jsx (e.g., in your top toolbar)
+<button
+  className="pill"
+  onClick={() => {
+    localStorage.setItem("ttl_active_tab", "jobkitting");
+    try { window.dispatchEvent(new Event("ttl:navigate")); } catch {}
+  }}
+>
+  Job Kitting
+</button>
