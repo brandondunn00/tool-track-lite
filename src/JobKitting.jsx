@@ -1,4 +1,4 @@
-// src/JobKitting.jsx  ←  FINAL, NO SCROLL, ONE-PAGE VIEW
+// src/JobKitting.jsx - Fixed with complete dark mode support
 import React, { useState, useEffect, useMemo } from "react";
 import { LS, load, save } from "./storage";
 
@@ -8,15 +8,15 @@ const nowISO = () => new Date().toISOString();
 /** ──────── 2D TOOL SVG ──────── */
 const ToolSVG = ({ type = "default" }) => {
   const svg = {
-    Endmill: `<svg viewBox="0 0 100 200"><rect x="40" y="0" width="20" height="150" fill="#64748b"/><rect x="35" y="150" width="30" height="50" fill="#94a3b8"/><circle cx="50" cy="150" r="15" fill="#e2e8f0"/></svg>`,
-    Drill: `<svg viewBox="0 0 100 200"><rect x="45" y="0" width="10" height="140" fill="#64748b"/><path d="M50 140 L30 180 L70 180 Z" fill="#94a3b8"/><circle cx="50" cy="180" r="10" fill="#e2e8f0"/></svg>`,
-    Tap: `<svg viewBox="0 0 100 200"><rect x="45" y="0" width="10" height="120" fill="#64748b"/><path d="M50 120 L35 160 Q50 170 65 160 L50 120" fill="#94a3b8"/><circle cx="50" cy="160" r="12" fill="#e2e8f0"/></svg>`,
-    default: `<svg viewBox="0 0 100 200"><rect x="40" y="0" width="20" height="150" fill="#94a3b8"/><circle cx="50" cy="150" r="15" fill="#e2e8f0"/></svg>`
+    Endmill: `<svg viewBox="0 0 100 200"><rect x="40" y="0" width="20" height="150" fill="currentColor"/><rect x="35" y="150" width="30" height="50" fill="currentColor" opacity="0.7"/><circle cx="50" cy="150" r="15" fill="currentColor" opacity="0.5"/></svg>`,
+    Drill: `<svg viewBox="0 0 100 200"><rect x="45" y="0" width="10" height="140" fill="currentColor"/><path d="M50 140 L30 180 L70 180 Z" fill="currentColor" opacity="0.7"/><circle cx="50" cy="180" r="10" fill="currentColor" opacity="0.5"/></svg>`,
+    Tap: `<svg viewBox="0 0 100 200"><rect x="45" y="0" width="10" height="120" fill="currentColor"/><path d="M50 120 L35 160 Q50 170 65 160 L50 120" fill="currentColor" opacity="0.7"/><circle cx="50" cy="160" r="12" fill="currentColor" opacity="0.5"/></svg>`,
+    default: `<svg viewBox="0 0 100 200"><rect x="40" y="0" width="20" height="150" fill="currentColor"/><circle cx="50" cy="150" r="15" fill="currentColor" opacity="0.5"/></svg>`
   };
   return (
     <div
       dangerouslySetInnerHTML={{ __html: svg[type] || svg.default }}
-      style={{ width: 72, height: 140, margin: "0 auto" }}
+      style={{ width: 72, height: 140, margin: "0 auto", color: "var(--muted)" }}
     />
   );
 };
@@ -36,6 +36,8 @@ function Field({ label, value, onChange, ...props }) {
           border: "1px solid var(--border)",
           borderRadius: 10,
           outline: "none",
+          background: "var(--card)",
+          color: "var(--text)"
         }}
       />
     </label>
@@ -89,7 +91,7 @@ export default function JobKitting() {
     }));
   }, [draft.numOps]);
 
-  // UPGRADE 1: Close modal with Esc
+  // Close modal with Esc
   useEffect(() => {
     if (!popupOpen) return;
     const onKey = (e) => e.key === "Escape" && setPopupOpen(false);
@@ -97,7 +99,7 @@ export default function JobKitting() {
     return () => window.removeEventListener("keydown", onKey);
   }, [popupOpen]);
 
-  // UPGRADE 4: Prevent background scroll while modal is open
+  // Prevent background scroll while modal is open
   useEffect(() => {
     if (popupOpen) {
       const prev = document.body.style.overflow;
@@ -158,7 +160,6 @@ export default function JobKitting() {
         ...p,
         tools: p.tools.map((t, i) => i === index ? { ...tool, qty: t?.qty || 1 } : t)
       }));
-      // UPGRADE 2: Auto-open inspector after drop
       setToolDetail({ index, ...tool });
       note(`${tool.name} → T${index+1}`);
       if (tool.quantity <= tool.threshold) {
@@ -198,36 +199,38 @@ export default function JobKitting() {
 
   return (
     <div className="app">
-      {/* HEADER */}
-      <div className="header" style={{background:"white",borderBottom:"1px solid #e2e8f0",padding:"12px 24px",display:"flex",justifyContent:"space-between",boxShadow:"0 1px 3px rgba(0,0,0,0.1)"}}>
-        <div style={{display:"flex",alignItems:"center",gap:16}}>
-          <div style={{fontSize:32}}>Toolly</div>
-          <h1 style={{margin:0,fontSize:24,fontWeight:800}}>Job Kitting</h1>
-        </div>
-        <div className="toolbar" style={{gap:10}}>
-          <button className="btn" onClick={() => window.location.hash = "#inventory"}>Home</button>
-          <button className="btn" onClick={() => note("View All coming soon")}>View All</button>
-          <button className="btn btn-primary" onClick={() => setPopupOpen(true)}>+ Create New</button>
-        </div>
-      </div>
-
       {/* TOGGLED PANELS */}
-      <div style={{margin:24,display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:12}}>
+      <div style={{margin:"0 24px 12px",display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
         {/* TOGGLED RECENT KITS */}
         <div className="card">
           <div
-            style={{padding:16,borderBottom:"1px solid var(--border)",background:"#fef3c7",cursor:"pointer",display:"flex",justifyContent:"space-between"}}
+            style={{
+              padding:16,
+              borderBottom:"1px solid var(--border)",
+              background:"#fef3c7",
+              cursor:"pointer",
+              display:"flex",
+              justifyContent:"space-between"
+            }}
             onClick={() => setShowRecentKits(p => !p)}
           >
-            <strong>Recently Opened</strong>
-            <span>{showRecentKits ? "−" : "+"}</span>
+            <strong style={{color:"#78350f"}}>Recently Opened</strong>
+            <span style={{color:"#78350f"}}>{showRecentKits ? "−" : "+"}</span>
           </div>
           {showRecentKits && (
             <ul style={{margin:0,padding:16,listStyle:"none",maxHeight:200,overflow:"auto"}}>
               {kits.length === 0 && <li className="subtle">No kits yet — create one!</li>}
               {kits.slice(0,8).map(k => (
-                <li key={k.id} onClick={() => setSelectedKit(k)} style={{padding:"8px 0",borderBottom:"1px dashed var(--border)",cursor:"pointer"}}>
-                  <div style={{fontWeight:600}}>{k.partName}</div>
+                <li 
+                  key={k.id} 
+                  onClick={() => setSelectedKit(k)} 
+                  style={{
+                    padding:"8px 0",
+                    borderBottom:"1px dashed var(--border)",
+                    cursor:"pointer"
+                  }}
+                >
+                  <div style={{fontWeight:600,color:"var(--text)"}}>{k.partName}</div>
                   <div className="subtle">{k.customer} · {k.partNumber}</div>
                 </li>
               ))}
@@ -238,11 +241,18 @@ export default function JobKitting() {
         {/* TOGGLED RECENT PULLS */}
         <div className="card">
           <div
-            style={{padding:16,borderBottom:"1px solid var(--border)",background:"#dbeafe",cursor:"pointer",display:"flex",justifyContent:"space-between"}}
+            style={{
+              padding:16,
+              borderBottom:"1px solid var(--border)",
+              background:"#dbeafe",
+              cursor:"pointer",
+              display:"flex",
+              justifyContent:"space-between"
+            }}
             onClick={() => setShowRecentPulls(p => !p)}
           >
-            <strong>Recent Inventory Pulls</strong>
-            <span>{showRecentPulls ? "−" : "+"}</span>
+            <strong style={{color:"#1e3a8a"}}>Recent Inventory Pulls</strong>
+            <span style={{color:"#1e3a8a"}}>{showRecentPulls ? "−" : "+"}</span>
           </div>
           {showRecentPulls && (
             <ul style={{margin:0,padding:16,listStyle:"none",maxHeight:200,overflow:"auto"}}>
@@ -252,48 +262,114 @@ export default function JobKitting() {
         </div>
       </div>
 
+      {/* CREATE NEW KIT BUTTON */}
+      <div style={{margin:"0 24px 24px",display:"flex",justifyContent:"flex-end"}}>
+        <button className="btn btn-primary" onClick={() => setPopupOpen(true)}>
+          + Create New Kit
+        </button>
+      </div>
+
       {/* ONE POPUP: INVENTORY + TILES + RIGHT-SIDE INSPECTOR */}
       {popupOpen && (
         <div className="modal-backdrop" onClick={() => setPopupOpen(false)}>
           <div
             className="card"
             style={{
-              width: "min(1920px, 98vw)",  // UPGRADE 3: wider modal
+              width: "min(1920px, 98vw)",
               height: "92vh",
               padding: 0,
               display: "flex",
-              flexDirection: "column"
+              flexDirection: "column",
+              background: "var(--card)"
             }}
             onClick={(e) => e.stopPropagation()}
           >
             {/* HEADER */}
-            <div style={{padding:24,borderBottom:"1px solid var(--border)",background:"#f8fafc"}}>
-              <h2 style={{margin:0}}>Create New Job Kit</h2>
+            <div style={{
+              padding:24,
+              borderBottom:"1px solid var(--border)",
+              background:"var(--card)"
+            }}>
+              <h2 style={{margin:0,color:"var(--text)"}}>Create New Job Kit</h2>
             </div>
 
             {/* TOP FORM */}
-            <div style={{padding:24,display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:16,borderBottom:"1px solid var(--border)"}}>
+            <div style={{
+              padding:24,
+              display:"grid",
+              gridTemplateColumns:"1fr 1fr 1fr 1fr",
+              gap:16,
+              borderBottom:"1px solid var(--border)",
+              background:"var(--card)"
+            }}>
               <Field label="Project" value={draft.project} onChange={v=>setDraft(p=>({...p,project:v}))} />
               <Field label="Customer" value={draft.customer} onChange={v=>setDraft(p=>({...p,customer:v}))} />
               <Field label="Part Name" value={draft.partName} onChange={v=>setDraft(p=>({...p,partName:v}))} />
               <Field label="Part Number" value={draft.partNumber} onChange={v=>setDraft(p=>({...p,partNumber:v}))} />
               <Field label="Machine" value={draft.machine} onChange={v=>setDraft(p=>({...p,machine:v}))} />
               <Field label="Program #" value={draft.program} onChange={v=>setDraft(p=>({...p,program:v}))} />
-              <Field label="Number of Ops" type="number" min="1" max="31" value={draft.numOps} onChange={v=>setDraft(p=>({...p,numOps:v}))} />
+              <Field label="Number of Tools" type="number" min="1" max="31" value={draft.numOps} onChange={v=>setDraft(p=>({...p,numOps:v}))} />
             </div>
 
             {/* MAIN: LEFT INVENTORY + MIDDLE TILES + (COND) RIGHT INSPECTOR */}
-            <div style={{flex:1,display:"grid",gridTemplateColumns:mainCols,gap:0,overflow:"hidden"}}>
+            <div style={{
+              flex:1,
+              display:"grid",
+              gridTemplateColumns:mainCols,
+              gap:0,
+              overflow:"hidden",
+              background:"var(--card)"
+            }}>
               {/* LEFT: INVENTORY */}
-              <div style={{padding:24,borderRight:"1px solid var(--border)",overflow:"auto"}}>
-                <strong style={{fontSize:16,display:"block",marginBottom:12}}>Tool Inventory</strong>
-                <input placeholder="Search tools…" style={{width:"100%",padding:10,borderRadius:8,border:"1px solid #cbd5e1",marginBottom:12}} value={inventorySearch} onChange={e=>setInventorySearch(e.target.value)} />
+              <div style={{
+                padding:24,
+                borderRight:"1px solid var(--border)",
+                overflow:"auto",
+                background:"var(--card)"
+              }}>
+                <strong style={{fontSize:16,display:"block",marginBottom:12,color:"var(--text)"}}>
+                  Tool Inventory
+                </strong>
+                <input 
+                  placeholder="Search tools…" 
+                  style={{
+                    width:"100%",
+                    padding:10,
+                    borderRadius:8,
+                    border:"1px solid var(--border)",
+                    marginBottom:12,
+                    background:"var(--card)",
+                    color:"var(--text)"
+                  }} 
+                  value={inventorySearch} 
+                  onChange={e=>setInventorySearch(e.target.value)} 
+                />
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
-                  <select value={filterMachine} onChange={e=>setFilterMachine(e.target.value)} style={{padding:8,borderRadius:8,border:"1px solid #cbd5e1"}}>
+                  <select 
+                    value={filterMachine} 
+                    onChange={e=>setFilterMachine(e.target.value)} 
+                    style={{
+                      padding:8,
+                      borderRadius:8,
+                      border:"1px solid var(--border)",
+                      background:"var(--card)",
+                      color:"var(--text)"
+                    }}
+                  >
                     <option value="">All Machines</option>
                     {machineOptions.map(m => <option key={m}>{m}</option>)}
                   </select>
-                  <select value={filterType} onChange={e=>setFilterType(e.target.value)} style={{padding:8,borderRadius:8,border:"1px solid #cbd5e1"}}>
+                  <select 
+                    value={filterType} 
+                    onChange={e=>setFilterType(e.target.value)} 
+                    style={{
+                      padding:8,
+                      borderRadius:8,
+                      border:"1px solid var(--border)",
+                      background:"var(--card)",
+                      color:"var(--text)"
+                    }}
+                  >
                     <option value="">All Types</option>
                     {typeOptions.map(t => <option key={t}>{t}</option>)}
                   </select>
@@ -309,15 +385,17 @@ export default function JobKitting() {
                         onDragStart={e=>handleDragStart(e, tool)}
                         style={{
                           padding:12,
-                          borderBottom:"1px solid #e2e8f0",
+                          borderBottom:"1px solid var(--border)",
                           cursor:"grab",
-                          background:dragOverIndex !== null ? "#f0f9ff" : "",
+                          background:dragOverIndex !== null ? "var(--accent-50)" : "var(--card)",
                           borderRadius:8,
                           marginBottom:8
                         }}
                       >
-                        <div style={{fontWeight:600}}>{tool.name}</div>
-                        <div className="subtle">{tool.manufacturer} · {tool.partNumber} · {tool.quantity} in stock</div>
+                        <div style={{fontWeight:600,color:"var(--text)"}}>{tool.name}</div>
+                        <div className="subtle">
+                          {tool.manufacturer} · {tool.partNumber} · {tool.quantity} in stock
+                        </div>
                         <div style={{marginTop:4}}>
                           {isOut ? <span className="badge zero">Out</span> :
                            isLow ? <span className="badge low">Low</span> :
@@ -330,11 +408,29 @@ export default function JobKitting() {
               </div>
 
               {/* MIDDLE: TILES */}
-              <div style={{padding:24,overflow:"auto"}}>
-                <strong style={{display:"block",marginBottom:8}}>Tool Tiles</strong>
-                <div style={{border:"2px dashed #cbd5e1",borderRadius:12,padding:24,background:"#f8fafc",minHeight:400}}>
-                  <p style={{margin:"0 0 16px",color:"#64748b",textAlign:"center"}}>Drag tools from left → T1-T{draft.numOps}</p>
-                  <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(80px,1fr))",gap:12}}>
+              <div style={{padding:24,overflow:"auto",background:"var(--card)"}}>
+                <strong style={{display:"block",marginBottom:8,color:"var(--text)"}}>
+                  Tool Tiles
+                </strong>
+                <div style={{
+                  border:"2px dashed var(--border)",
+                  borderRadius:12,
+                  padding:24,
+                  background:"var(--bg)",
+                  minHeight:400
+                }}>
+                  <p style={{
+                    margin:"0 0 16px",
+                    color:"var(--muted)",
+                    textAlign:"center"
+                  }}>
+                    Drag tools from left → T1-T{draft.numOps}
+                  </p>
+                  <div style={{
+                    display:"grid",
+                    gridTemplateColumns:"repeat(auto-fill,minmax(80px,1fr))",
+                    gap:12
+                  }}>
                     {draft.tools.map((t,i) => (
                       <div
                         key={i}
@@ -345,20 +441,24 @@ export default function JobKitting() {
                         onDragLeave={() => setDragOverIndex(null)}
                         onClick={() => t?.name && setToolDetail({index:i, ...t})}
                         style={{
-                          background:"white",
-                          border: dragOverIndex === i ? "3px dashed #6366f1" : "2px solid #e2e8f0",
+                          background:"var(--card)",
+                          border: dragOverIndex === i ? "3px dashed var(--accent)" : "2px solid var(--border)",
                           borderRadius:12,
                           padding:12,
                           textAlign:"center",
                           cursor: t?.name ? "grab" : "pointer",
-                          boxShadow:t?.name?"0 4px 12px rgba(0,0,0,0.1)":"none",
+                          boxShadow:t?.name?"var(--shadow)":"none",
                           transition:"all 0.2s"
                         }}
                       >
-                        <div style={{fontWeight:700,fontSize:16}}>T{i+1}</div>
+                        <div style={{fontWeight:700,fontSize:16,color:"var(--text)"}}>
+                          T{i+1}
+                        </div>
                         {t?.name ? (
                           <>
-                            <div style={{fontSize:11,color:"#64748b",marginTop:4}}>{t.name.split(" ")[0]}</div>
+                            <div style={{fontSize:11,color:"var(--muted)",marginTop:4}}>
+                              {t.name.split(" ")[0]}
+                            </div>
                             <div style={{fontSize:10,marginTop:4}}>
                               {t.quantity === 0 ? <span className="badge zero">Out</span> :
                                t.quantity <= t.threshold ? <span className="badge low">Low</span> :
@@ -366,7 +466,7 @@ export default function JobKitting() {
                             </div>
                           </>
                         ) : (
-                          <div style={{fontSize:10,color:"#94a3b8",marginTop:4}}>—</div>
+                          <div style={{fontSize:10,color:"var(--muted)",marginTop:4}}>—</div>
                         )}
                       </div>
                     ))}
@@ -375,7 +475,16 @@ export default function JobKitting() {
 
                 <textarea
                   placeholder="Job notes, speeds/feeds, coolant..."
-                  style={{width:"100%",marginTop:20,padding:16,borderRadius:12,border:"1px solid #cbd5e1",minHeight:100}}
+                  style={{
+                    width:"100%",
+                    marginTop:20,
+                    padding:16,
+                    borderRadius:12,
+                    border:"1px solid var(--border)",
+                    minHeight:100,
+                    background:"var(--card)",
+                    color:"var(--text)"
+                  }}
                   value={draft.notes}
                   onChange={e=>setDraft(p=>({...p,notes:e.target.value}))}
                 />
@@ -383,9 +492,19 @@ export default function JobKitting() {
 
               {/* RIGHT: INLINE TOOL INSPECTOR (only when a tile is selected) */}
               {toolDetail && (
-                <div style={{padding:24,borderLeft:"1px solid var(--border)",overflow:"auto",background:"#ffffff"}}>
-                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-                    <h3 style={{margin:0}}>Tool Info</h3>
+                <div style={{
+                  padding:24,
+                  borderLeft:"1px solid var(--border)",
+                  overflow:"auto",
+                  background:"var(--card)"
+                }}>
+                  <div style={{
+                    display:"flex",
+                    justifyContent:"space-between",
+                    alignItems:"center",
+                    marginBottom:8
+                  }}>
+                    <h3 style={{margin:0,color:"var(--text)"}}>Tool Info</h3>
                     <button className="btn" onClick={() => setToolDetail(null)}>Close</button>
                   </div>
                   <div className="subtle" style={{marginBottom:12}}>
@@ -411,7 +530,11 @@ export default function JobKitting() {
                     <Field label="Offsets" value={toolDetail.offsets || ""} onChange={v=>setDraft(p=>({...p,tools:p.tools.map((t,i)=>i===toolDetail.index?{...t,offsets:v}:t)}))} />
                   </div>
 
-                  <button className="btn btn-primary" style={{marginTop:16,width:"100%"}} onClick={() => setToolDetail(null)}>
+                  <button 
+                    className="btn btn-primary" 
+                    style={{marginTop:16,width:"100%"}} 
+                    onClick={() => setToolDetail(null)}
+                  >
                     Done
                   </button>
                 </div>
@@ -419,11 +542,19 @@ export default function JobKitting() {
             </div>
 
             {/* FOOTER */}
-            <div style={{padding:24,borderTop:"1px solid var(--border)",background:"#f8fafc",display:"flex",justifyContent:"space-between"}}>
+            <div style={{
+              padding:24,
+              borderTop:"1px solid var(--border)",
+              background:"var(--card)",
+              display:"flex",
+              justifyContent:"space-between"
+            }}>
               <button className="btn" onClick={() => setPopupOpen(false)}>Cancel</button>
               <div style={{display:"flex",gap:12}}>
                 <button className="btn btn-primary" onClick={createKit}>Save Kit</button>
-                <button className="btn btn-success" onClick={()=>{createKit(); printSheet();}}>Create Setup Sheet</button>
+                <button className="btn btn-success" onClick={()=>{createKit(); printSheet();}}>
+                  Create Setup Sheet
+                </button>
               </div>
             </div>
           </div>
@@ -431,7 +562,12 @@ export default function JobKitting() {
       )}
 
       {/* TOAST */}
-      {toast && <div className="toast"><span>Checkmark</span><span>{toast}</span></div>}
+      {toast && (
+        <div className="toast">
+          <span>✅</span>
+          <span>{toast}</span>
+        </div>
+      )}
     </div>
   );
 }
