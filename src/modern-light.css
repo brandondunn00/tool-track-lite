@@ -374,3 +374,27 @@ h1 {
   border-radius: 999px;
   border: 2px solid #f3f4f6;
 }
+/* DARK MODE — Fulcrum Pro level */
+body.dark {
+  --bg: #0f172a;
+  --card: #1e293b;
+  --text: #e2e8f0;
+  --muted: #94a3b8;
+  --border: #334155;
+  --accent: #6366f1;
+  background: var(--bg);
+  color: var(--text);
+}
+body.dark .app { background: var(--bg); }
+body.dark .card { background: var(--card); border:1px solid var(--border); }
+body.dark input, body.dark select, body.dark textarea {
+  background: #334155 !important;
+  color: white !important;
+  border:1px solid #475569 !important;
+}
+body.dark .progress span { background: #10b981 !important; }
+body.dark .badge.low span { background:#f59e0b; }
+body.dark .badge.zero span { background:#ef4444; }
+body.dark .btn { filter: brightness(1.1); }
+body.dark .header { background:#1e293b; border-bottom:1px solid #334155; }
+body.dark .toast { background:#334155; }

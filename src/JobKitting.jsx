@@ -1,58 +1,34 @@
-// src/JobKitting.jsx
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+// src/JobKitting.jsx  ←  FINAL, NO SCROLL, ONE-PAGE VIEW
+import React, { useState, useEffect, useMemo } from "react";
+import { LS, load, save } from "./storage";
 
-/** ---------------- localStorage keys ---------------- */
-const LS = {
-  JOB_KITS: "ttl_job_kits",
-  PULLS: "ttl_recent_pulls",
-  TOOLS: "ttl_tools", // from your Inventory page
-  NAV: "ttl_active_tab",
+/** ──────── HELPERS ──────── */
+const nowISO = () => new Date().toISOString();
+
+/** ──────── 2D TOOL SVG ──────── */
+const ToolSVG = ({ type = "default" }) => {
+  const svg = {
+    Endmill: `<svg viewBox="0 0 100 200"><rect x="40" y="0" width="20" height="150" fill="#64748b"/><rect x="35" y="150" width="30" height="50" fill="#94a3b8"/><circle cx="50" cy="150" r="15" fill="#e2e8f0"/></svg>`,
+    Drill: `<svg viewBox="0 0 100 200"><rect x="45" y="0" width="10" height="140" fill="#64748b"/><path d="M50 140 L30 180 L70 180 Z" fill="#94a3b8"/><circle cx="50" cy="180" r="10" fill="#e2e8f0"/></svg>`,
+    Tap: `<svg viewBox="0 0 100 200"><rect x="45" y="0" width="10" height="120" fill="#64748b"/><path d="M50 120 L35 160 Q50 170 65 160 L50 120" fill="#94a3b8"/><circle cx="50" cy="160" r="12" fill="#e2e8f0"/></svg>`,
+    default: `<svg viewBox="0 0 100 200"><rect x="40" y="0" width="20" height="150" fill="#94a3b8"/><circle cx="50" cy="150" r="15" fill="#e2e8f0"/></svg>`
+  };
+  return (
+    <div
+      dangerouslySetInnerHTML={{ __html: svg[type] || svg.default }}
+      style={{ width: 72, height: 140, margin: "0 auto" }}
+    />
+  );
 };
 
-/** ---------------- small helpers ---------------- */
-const nowISO = () => new Date().toISOString();
-const fmtDate = (iso) =>
-  new Date(iso).toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-
-/** ---------------- status badge ---------------- */
-function Status({ value }) {
-  const map = {
-    draft: { bg: "#eef2ff", bd: "#c7d2fe", fg: "#3730a3", label: "Draft" },
-    allocated: { bg: "#fffbeb", bd: "#fde68a", fg: "#92400e", label: "Allocated" },
-    staged: { bg: "#ecfeff", bd: "#a5f3fc", fg: "#155e75", label: "Staged" },
-    issued: { bg: "#f0fdf4", bd: "#bbf7d0", fg: "#166534", label: "Issued" },
-    canceled: { bg: "#fff1f2", bd: "#fecaca", fg: "#991b1b", label: "Canceled" },
-  };
-  const s = map[value] || map.draft;
-  return (
-    <span
-      className="badge"
-      style={{
-        background: s.bg,
-        borderColor: s.bd,
-        color: s.fg,
-        fontSize: 12,
-        padding: "4px 8px",
-      }}
-    >
-      {s.label}
-    </span>
-  );
-}
-
-/** tiny input */
+/** ──────── FIELD COMPONENT ──────── */
 function Field({ label, value, onChange, ...props }) {
   return (
     <label style={{ display: "grid", gap: 6 }}>
       <span className="subtle">{label}</span>
       <input
         {...props}
-        value={String(value ?? "")}
+        value={String(value || "")}
         onChange={(e) => onChange?.(e.target.value)}
         style={{
           width: "100%",
@@ -66,654 +42,396 @@ function Field({ label, value, onChange, ...props }) {
   );
 }
 
-/** ---------------- main ---------------- */
+/** ──────── MAIN ──────── */
 export default function JobKitting() {
-  const [jobKits, setJobKits] = useState([]);
-  const [pulls, setPulls] = useState([]);
+  const [kits, setKits] = useState([]);
   const [tools, setTools] = useState([]);
-
   const [toast, setToast] = useState("");
 
-  // create-new modal
-  const [isNewOpen, setNewOpen] = useState(false);
+  // Toggles
+  const [showRecentKits, setShowRecentKits] = useState(false);
+  const [showRecentPulls, setShowRecentPulls] = useState(false);
+
+  // Popup
+  const [popupOpen, setPopupOpen] = useState(false);
+  const [selectedKit, setSelectedKit] = useState(null);
+  const [toolDetail, setToolDetail] = useState(null);
+
+  // Drafts
   const [draft, setDraft] = useState({
-    project: "",
-    customer: "",
-    partName: "",
-    partNumber: "",
+    project: "", customer: "", partName: "", partNumber: "", machine: "", program: "", numOps: 5, tools: [], notes: ""
   });
 
-  // requirements modal
-  const [reqOpen, setReqOpen] = useState(false);
-  const [reqJobId, setReqJobId] = useState(null);
+  // Inventory filters
+  const [inventorySearch, setInventorySearch] = useState("");
+  const [filterMachine, setFilterMachine] = useState("");
+  const [filterType, setFilterType] = useState("");
 
-  // load
+  // Drag state
+  const [dragOverIndex, setDragOverIndex] = useState(null);
+  const [draggedTile, setDraggedTile] = useState(null);
+
   useEffect(() => {
-    try {
-      const j = JSON.parse(localStorage.getItem(LS.JOB_KITS) || "[]");
-      const p = JSON.parse(localStorage.getItem(LS.PULLS) || "[]");
-      const t = JSON.parse(localStorage.getItem(LS.TOOLS) || "[]");
-      setJobKits(Array.isArray(j) ? j : []);
-      setPulls(Array.isArray(p) ? p : []);
-      setTools(Array.isArray(t) ? t : []);
-    } catch {
-      // ignore
-    }
+    setKits(load("toolly_kits", []));
+    setTools(load(LS.tools, []));
   }, []);
 
-  // persist
+  useEffect(() => { save("toolly_kits", kits); }, [kits]);
+
+  const note = (m) => { setToast(m); setTimeout(() => setToast(""), 2000); };
+
+  // Initialize tool slots
   useEffect(() => {
-    localStorage.setItem(LS.JOB_KITS, JSON.stringify(jobKits));
-  }, [jobKits]);
+    const count = parseInt(draft.numOps) || 5;
+    setDraft(p => ({
+      ...p,
+      tools: Array(count).fill(null).map((_, i) => p.tools[i] || { qty: 1 })
+    }));
+  }, [draft.numOps]);
+
+  // UPGRADE 1: Close modal with Esc
   useEffect(() => {
-    localStorage.setItem(LS.PULLS, JSON.stringify(pulls));
-  }, [pulls]);
+    if (!popupOpen) return;
+    const onKey = (e) => e.key === "Escape" && setPopupOpen(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [popupOpen]);
 
-  const note = (m) => {
-    setToast(m);
-    clearTimeout(note._t);
-    note._t = setTimeout(() => setToast(""), 2000);
-  };
+  // UPGRADE 4: Prevent background scroll while modal is open
+  useEffect(() => {
+    if (popupOpen) {
+      const prev = document.body.style.overflow;
+      document.body.style.overflow = "hidden";
+      return () => { document.body.style.overflow = prev; };
+    }
+  }, [popupOpen]);
 
-  /** ----------- derived lists ----------- */
-  const recentJobs = useMemo(
-    () =>
-      [...jobKits]
-        .sort((a, b) => (b.updatedAt || b.createdAt || "").localeCompare(a.updatedAt || a.createdAt || ""))
-        .slice(0, 8),
-    [jobKits]
-  );
-
-  const recentPulls = useMemo(
-    () => [...pulls].sort((a, b) => (b.date || "").localeCompare(a.date || "")).slice(0, 8),
-    [pulls]
-  );
-
-  /** ----------- actions ----------- */
-  const createDraft = (openReqAfter = false) => {
-    const id = `${Date.now()}`;
+  const createKit = () => {
     const kit = {
-      id,
-      status: "draft",
+      id: Date.now(),
       ...draft,
-      requirements: [],
-      setupSheet: null,
-      createdAt: nowISO(),
-      updatedAt: nowISO(),
+      created: nowISO(),
+      status: "draft"
     };
-    setJobKits((prev) => [kit, ...prev]);
-    setNewOpen(false);
-    setDraft({ project: "", customer: "", partName: "", partNumber: "" });
-    note("Job kit created");
-    if (openReqAfter) {
-      setReqJobId(id);
-      setReqOpen(true);
+    setKits(p => [kit, ...p]);
+    setPopupOpen(false);
+    setSelectedKit(kit);
+    note("Kit created!");
+  };
+
+  const printSheet = () => {
+    if (!selectedKit) return;
+    const win = window.open("", "_blank");
+    win.document.write(`
+      <html><body style="font-family:Arial;margin:40px">
+        <h1>Toolly Setup Sheet</h1>
+        <h2>${selectedKit.customer} — ${selectedKit.partName} (${selectedKit.partNumber})</h2>
+        <p><strong>Machine:</strong> ${selectedKit.machine} | <strong>Program:</strong> ${selectedKit.program}</p>
+        <table border="1" style="width:100%;border-collapse:collapse;margin:20px 0">
+          <tr style="background:#6366f1;color:white"><th>#</th><th>Tool</th><th>Qty</th><th>Notes</th></tr>
+          ${selectedKit.tools.map((t,i) => t ? `<tr><td>T${i+1}</td><td>${t.name || "—"}</td><td>${t.qty}</td><td>${t.notes || ""}</td></tr>` : "").join("")}
+        </table>
+        <div style="text-align:center"><img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${selectedKit.id}" alt="QR Code for kit" /><p>Scan to pull kit</p></div>
+        <script>window.print()</script>
+      </body></html>
+    `);
+  };
+
+  // DRAG HANDLERS
+  const handleDragStart = (e, tool) => {
+    e.dataTransfer.setData("tool", JSON.stringify(tool));
+  };
+
+  const handleTileDragStart = (e, index) => {
+    setDraggedTile(index);
+  };
+
+  const handleDrop = (e, index) => {
+    e.preventDefault();
+    setDragOverIndex(null);
+    setDraggedTile(null);
+
+    const toolData = e.dataTransfer.getData("tool");
+    if (toolData) {
+      const tool = JSON.parse(toolData);
+      setDraft(p => ({
+        ...p,
+        tools: p.tools.map((t, i) => i === index ? { ...tool, qty: t?.qty || 1 } : t)
+      }));
+      // UPGRADE 2: Auto-open inspector after drop
+      setToolDetail({ index, ...tool });
+      note(`${tool.name} → T${index+1}`);
+      if (tool.quantity <= tool.threshold) {
+        const queue = load("queue", []);
+        if (!queue.some(q => q.id === tool.id)) save("queue", [...queue, tool]);
+      }
+    } else if (draggedTile !== null && draggedTile !== index) {
+      setDraft(p => {
+        const tools = [...p.tools];
+        [tools[draggedTile], tools[index]] = [tools[index], tools[draggedTile]];
+        return { ...p, tools };
+      });
     }
   };
 
-  const removeJob = (id) => {
-    if (!window.confirm("Remove this job kit?")) return;
-    setJobKits((prev) => prev.filter((j) => j.id !== id));
-    note("Removed");
+  const handleDragOver = (e, index) => {
+    e.preventDefault();
+    setDragOverIndex(index);
   };
 
-  const removePull = (id) => {
-    setPulls((prev) => prev.filter((p) => p.id !== id));
-  };
+  // FILTERED TOOLS
+  const filteredTools = useMemo(() => {
+    return tools.filter(t => {
+      const q = inventorySearch.toLowerCase();
+      const hay = `${t.name} ${t.manufacturer} ${t.partNumber} ${t.description}`.toLowerCase();
+      return (!q || hay.includes(q)) &&
+             (!filterMachine || t.machineGroup === filterMachine) &&
+             (!filterType || t.toolType === filterType);
+    });
+  }, [tools, inventorySearch, filterMachine, filterType]);
 
-  // open job -> requirements editor (for draft in this phase)
-  const openJob = (id) => {
-    setReqJobId(id);
-    setReqOpen(true);
-  };
+  const machineOptions = [...new Set(tools.map(t => t.machineGroup))].filter(Boolean);
+  const typeOptions = [...new Set(tools.map(t => t.toolType))].filter(Boolean);
 
-  /** ----------- nav tabs ----------- */
-  const goHome = () => {
-    // 1) set LS and emit event (used by App.js)
-    localStorage.setItem(LS.NAV, "inventory");
-    try {
-      window.dispatchEvent(new Event("ttl:navigate"));
-    } catch {}
+  // Layout: when a tool is selected, open a 3rd column for the inspector
+  const mainCols = toolDetail ? "1.2fr 1.3fr 0.8fr" : "1.1fr 1.3fr";
 
-    // 2) if App.js exposes a helper, call it directly
-    if (typeof window.__TTL_SET_TAB === "function") {
-      try {
-        window.__TTL_SET_TAB("inventory");
-      } catch {}
-    }
-
-    // 3) last resort: bump the hash (so Back works visually)
-    if (!window.location.hash || window.location.hash !== "#inventory") {
-      try {
-        window.location.hash = "#inventory";
-      } catch {}
-    }
-  };
-
-  const viewAll = () => note("View All (we'll build list page)");
-
-  /** ----------- ui ----------- */
   return (
     <div className="app">
-      {/* Header */}
-      <div className="header">
-        <div className="brand" style={{ cursor: "pointer" }} onClick={goHome}>
-          <div className="logo">🧰</div>
-          <h1>Job Kitting</h1>
+      {/* HEADER */}
+      <div className="header" style={{background:"white",borderBottom:"1px solid #e2e8f0",padding:"12px 24px",display:"flex",justifyContent:"space-between",boxShadow:"0 1px 3px rgba(0,0,0,0.1)"}}>
+        <div style={{display:"flex",alignItems:"center",gap:16}}>
+          <div style={{fontSize:32}}>Toolly</div>
+          <h1 style={{margin:0,fontSize:24,fontWeight:800}}>Job Kitting</h1>
         </div>
-        <div className="toolbar">
-          <button className="btn" onClick={viewAll}>
-            View All
-          </button>
-          <button className="btn btn-primary" onClick={() => setNewOpen(true)}>
-            Create New
-          </button>
+        <div className="toolbar" style={{gap:10}}>
+          <button className="btn" onClick={() => window.location.hash = "#inventory"}>Home</button>
+          <button className="btn" onClick={() => note("View All coming soon")}>View All</button>
+          <button className="btn btn-primary" onClick={() => setPopupOpen(true)}>+ Create New</button>
         </div>
       </div>
 
-      {/* Tabs */}
-      <div className="toolbar" style={{ marginBottom: 8 }}>
-        <button className="pill" onClick={goHome}>
-          Home / Admin
-        </button>
-        <button className="pill active">Job Kitting</button>
-      </div>
+      {/* TOGGLED PANELS */}
+      <div style={{margin:24,display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:12}}>
+        {/* TOGGLED RECENT KITS */}
+        <div className="card">
+          <div
+            style={{padding:16,borderBottom:"1px solid var(--border)",background:"#fef3c7",cursor:"pointer",display:"flex",justifyContent:"space-between"}}
+            onClick={() => setShowRecentKits(p => !p)}
+          >
+            <strong>Recently Opened</strong>
+            <span>{showRecentKits ? "−" : "+"}</span>
+          </div>
+          {showRecentKits && (
+            <ul style={{margin:0,padding:16,listStyle:"none",maxHeight:200,overflow:"auto"}}>
+              {kits.length === 0 && <li className="subtle">No kits yet — create one!</li>}
+              {kits.slice(0,8).map(k => (
+                <li key={k.id} onClick={() => setSelectedKit(k)} style={{padding:"8px 0",borderBottom:"1px dashed var(--border)",cursor:"pointer"}}>
+                  <div style={{fontWeight:600}}>{k.partName}</div>
+                  <div className="subtle">{k.customer} · {k.partNumber}</div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
 
-      {/* Two column content */}
-      <div className="card" style={{ padding: 16, marginBottom: 12 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
-          {/* Recently Opened */}
-          <section className="card" style={{ padding: 16 }}>
-            <h3 style={{ marginTop: 0, marginBottom: 10 }}>Recently Opened</h3>
-            {recentJobs.length === 0 ? (
-              <div className="subtle">Nothing here yet — create a kit to get started.</div>
-            ) : (
-              <ul style={{ margin: 0, padding: 0, listStyle: "none" }}>
-                {recentJobs.map((j) => (
-                  <li
-                    key={j.id}
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "1fr auto auto auto",
-                      alignItems: "center",
-                      gap: 12,
-                      padding: "10px 0",
-                      borderBottom: "1px solid var(--border)",
-                    }}
-                  >
-                    <div
-                      style={{ cursor: "pointer" }}
-                      onClick={() => openJob(j.id)}
-                      title="Open job kit"
-                    >
-                      <div style={{ fontWeight: 700 }}>
-                        {j.project || "Untitled Project"} — {j.partName || "Part ?"}
-                      </div>
-                      <div className="subtle">
-                        {j.customer || "Customer ?"} · PN {j.partNumber || "—"} · {fmtDate(j.updatedAt || j.createdAt)}
-                      </div>
-                    </div>
-                    <Status value={j.status} />
-                    <button className="btn" onClick={() => openJob(j.id)}>
-                      Edit Requirements
-                    </button>
-                    <button className="btn btn-danger" onClick={() => removeJob(j.id)}>
-                      Remove
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-
-          {/* Recent Inventory Pulls */}
-          <section className="card" style={{ padding: 16 }}>
-            <h3 style={{ marginTop: 0, marginBottom: 10 }}>Recent Inventory Pulls</h3>
-            {recentPulls.length === 0 ? (
-              <div className="subtle">No pulls yet. When kits are issued, you’ll see them here.</div>
-            ) : (
-              <ul style={{ margin: 0, padding: 0, listStyle: "none" }}>
-                {recentPulls.map((p) => (
-                  <li
-                    key={p.id}
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "1fr auto",
-                      alignItems: "center",
-                      gap: 12,
-                      padding: "10px 0",
-                      borderBottom: "1px solid var(--border)",
-                    }}
-                  >
-                    <div>
-                      <div style={{ fontWeight: 600 }}>{p.toolName} — qty {p.qty}</div>
-                      <div className="subtle">
-                        {p.reason || "Pull"} · {p.jobRef ? `Job ${p.jobRef} · ` : ""}
-                        {fmtDate(p.date)}
-                      </div>
-                    </div>
-                    <button className="btn" onClick={() => removePull(p.id)}>
-                      Remove
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
+        {/* TOGGLED RECENT PULLS */}
+        <div className="card">
+          <div
+            style={{padding:16,borderBottom:"1px solid var(--border)",background:"#dbeafe",cursor:"pointer",display:"flex",justifyContent:"space-between"}}
+            onClick={() => setShowRecentPulls(p => !p)}
+          >
+            <strong>Recent Inventory Pulls</strong>
+            <span>{showRecentPulls ? "−" : "+"}</span>
+          </div>
+          {showRecentPulls && (
+            <ul style={{margin:0,padding:16,listStyle:"none",maxHeight:200,overflow:"auto"}}>
+              <li className="subtle">No pulls yet</li>
+            </ul>
+          )}
         </div>
       </div>
 
-      {/* Toast */}
-      {toast && (
-        <div className="toast">
-          <span>ℹ️</span>
-          <span>{toast}</span>
-        </div>
-      )}
-
-      {/* Create New modal */}
-      {isNewOpen && (
-        <div
-          onClick={() => setNewOpen(false)}
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,.35)",
-            display: "grid",
-            placeItems: "center",
-            zIndex: 50,
-          }}
-        >
+      {/* ONE POPUP: INVENTORY + TILES + RIGHT-SIDE INSPECTOR */}
+      {popupOpen && (
+        <div className="modal-backdrop" onClick={() => setPopupOpen(false)}>
           <div
             className="card"
+            style={{
+              width: "min(1920px, 98vw)",  // UPGRADE 3: wider modal
+              height: "92vh",
+              padding: 0,
+              display: "flex",
+              flexDirection: "column"
+            }}
             onClick={(e) => e.stopPropagation()}
-            style={{ width: "min(820px, 96vw)", padding: 16 }}
           >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <h3 style={{ margin: 0 }}>Create New Job Kit</h3>
-              <button className="btn" onClick={() => setNewOpen(false)}>
-                Close
-              </button>
+            {/* HEADER */}
+            <div style={{padding:24,borderBottom:"1px solid var(--border)",background:"#f8fafc"}}>
+              <h2 style={{margin:0}}>Create New Job Kit</h2>
             </div>
 
-            <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-              <Field label="Project" value={draft.project} onChange={(v) => setDraft({ ...draft, project: v })} placeholder="e.g., Cobalt Chrome V2" />
-              <Field label="Customer" value={draft.customer} onChange={(v) => setDraft({ ...draft, customer: v })} placeholder="Acme MedTech" />
-              <Field label="Part Name" value={draft.partName} onChange={(v) => setDraft({ ...draft, partName: v })} placeholder="Bracket - Upper" />
-              <Field label="Part Number" value={draft.partNumber} onChange={(v) => setDraft({ ...draft, partNumber: v })} placeholder="PN-12345" />
+            {/* TOP FORM */}
+            <div style={{padding:24,display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:16,borderBottom:"1px solid var(--border)"}}>
+              <Field label="Project" value={draft.project} onChange={v=>setDraft(p=>({...p,project:v}))} />
+              <Field label="Customer" value={draft.customer} onChange={v=>setDraft(p=>({...p,customer:v}))} />
+              <Field label="Part Name" value={draft.partName} onChange={v=>setDraft(p=>({...p,partName:v}))} />
+              <Field label="Part Number" value={draft.partNumber} onChange={v=>setDraft(p=>({...p,partNumber:v}))} />
+              <Field label="Machine" value={draft.machine} onChange={v=>setDraft(p=>({...p,machine:v}))} />
+              <Field label="Program #" value={draft.program} onChange={v=>setDraft(p=>({...p,program:v}))} />
+              <Field label="Number of Ops" type="number" min="1" max="31" value={draft.numOps} onChange={v=>setDraft(p=>({...p,numOps:v}))} />
             </div>
 
-            <div className="toolbar" style={{ marginTop: 14, justifyContent: "flex-end" }}>
-              <button className="btn" onClick={() => setNewOpen(false)}>
-                Cancel
-              </button>
-              <button className="btn" onClick={() => createDraft(false)} disabled={!draft.project.trim() || !draft.partName.trim()} title="Project and Part Name are required">
-                Save Job Kit
-              </button>
-              <button className="btn btn-primary" onClick={() => createDraft(true)} disabled={!draft.project.trim() || !draft.partName.trim()} title="Project and Part Name are required">
-                Save & Add Requirements
-              </button>
+            {/* MAIN: LEFT INVENTORY + MIDDLE TILES + (COND) RIGHT INSPECTOR */}
+            <div style={{flex:1,display:"grid",gridTemplateColumns:mainCols,gap:0,overflow:"hidden"}}>
+              {/* LEFT: INVENTORY */}
+              <div style={{padding:24,borderRight:"1px solid var(--border)",overflow:"auto"}}>
+                <strong style={{fontSize:16,display:"block",marginBottom:12}}>Tool Inventory</strong>
+                <input placeholder="Search tools…" style={{width:"100%",padding:10,borderRadius:8,border:"1px solid #cbd5e1",marginBottom:12}} value={inventorySearch} onChange={e=>setInventorySearch(e.target.value)} />
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
+                  <select value={filterMachine} onChange={e=>setFilterMachine(e.target.value)} style={{padding:8,borderRadius:8,border:"1px solid #cbd5e1"}}>
+                    <option value="">All Machines</option>
+                    {machineOptions.map(m => <option key={m}>{m}</option>)}
+                  </select>
+                  <select value={filterType} onChange={e=>setFilterType(e.target.value)} style={{padding:8,borderRadius:8,border:"1px solid #cbd5e1"}}>
+                    <option value="">All Types</option>
+                    {typeOptions.map(t => <option key={t}>{t}</option>)}
+                  </select>
+                </div>
+                <div>
+                  {filteredTools.map(tool => {
+                    const isLow = tool.quantity <= tool.threshold;
+                    const isOut = tool.quantity === 0;
+                    return (
+                      <div
+                        key={tool.id}
+                        draggable
+                        onDragStart={e=>handleDragStart(e, tool)}
+                        style={{
+                          padding:12,
+                          borderBottom:"1px solid #e2e8f0",
+                          cursor:"grab",
+                          background:dragOverIndex !== null ? "#f0f9ff" : "",
+                          borderRadius:8,
+                          marginBottom:8
+                        }}
+                      >
+                        <div style={{fontWeight:600}}>{tool.name}</div>
+                        <div className="subtle">{tool.manufacturer} · {tool.partNumber} · {tool.quantity} in stock</div>
+                        <div style={{marginTop:4}}>
+                          {isOut ? <span className="badge zero">Out</span> :
+                           isLow ? <span className="badge low">Low</span> :
+                           <span className="badge ok">OK</span>}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* MIDDLE: TILES */}
+              <div style={{padding:24,overflow:"auto"}}>
+                <strong style={{display:"block",marginBottom:8}}>Tool Tiles</strong>
+                <div style={{border:"2px dashed #cbd5e1",borderRadius:12,padding:24,background:"#f8fafc",minHeight:400}}>
+                  <p style={{margin:"0 0 16px",color:"#64748b",textAlign:"center"}}>Drag tools from left → T1-T{draft.numOps}</p>
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(80px,1fr))",gap:12}}>
+                    {draft.tools.map((t,i) => (
+                      <div
+                        key={i}
+                        draggable={!!t?.name}
+                        onDragStart={e=>handleTileDragStart(e, i)}
+                        onDrop={e=>handleDrop(e, i)}
+                        onDragOver={e=>handleDragOver(e, i)}
+                        onDragLeave={() => setDragOverIndex(null)}
+                        onClick={() => t?.name && setToolDetail({index:i, ...t})}
+                        style={{
+                          background:"white",
+                          border: dragOverIndex === i ? "3px dashed #6366f1" : "2px solid #e2e8f0",
+                          borderRadius:12,
+                          padding:12,
+                          textAlign:"center",
+                          cursor: t?.name ? "grab" : "pointer",
+                          boxShadow:t?.name?"0 4px 12px rgba(0,0,0,0.1)":"none",
+                          transition:"all 0.2s"
+                        }}
+                      >
+                        <div style={{fontWeight:700,fontSize:16}}>T{i+1}</div>
+                        {t?.name ? (
+                          <>
+                            <div style={{fontSize:11,color:"#64748b",marginTop:4}}>{t.name.split(" ")[0]}</div>
+                            <div style={{fontSize:10,marginTop:4}}>
+                              {t.quantity === 0 ? <span className="badge zero">Out</span> :
+                               t.quantity <= t.threshold ? <span className="badge low">Low</span> :
+                               <span className="badge ok">OK</span>}
+                            </div>
+                          </>
+                        ) : (
+                          <div style={{fontSize:10,color:"#94a3b8",marginTop:4}}>—</div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <textarea
+                  placeholder="Job notes, speeds/feeds, coolant..."
+                  style={{width:"100%",marginTop:20,padding:16,borderRadius:12,border:"1px solid #cbd5e1",minHeight:100}}
+                  value={draft.notes}
+                  onChange={e=>setDraft(p=>({...p,notes:e.target.value}))}
+                />
+              </div>
+
+              {/* RIGHT: INLINE TOOL INSPECTOR (only when a tile is selected) */}
+              {toolDetail && (
+                <div style={{padding:24,borderLeft:"1px solid var(--border)",overflow:"auto",background:"#ffffff"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                    <h3 style={{margin:0}}>Tool Info</h3>
+                    <button className="btn" onClick={() => setToolDetail(null)}>Close</button>
+                  </div>
+                  <div className="subtle" style={{marginBottom:12}}>
+                    Editing: <strong>T{toolDetail.index + 1}</strong> {toolDetail.name ? `— ${toolDetail.name}` : ""}
+                  </div>
+
+                  <div style={{display:"grid",placeItems:"center",margin:"8px 0 16px"}}>
+                    <div style={{width:72,height:140}}>
+                      <ToolSVG type={toolDetail.toolType} />
+                    </div>
+                  </div>
+
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,fontSize:14}}>
+                    <Field label="Tool Type" value={toolDetail.toolType || ""} onChange={v=>setDraft(p=>({...p,tools:p.tools.map((t,i)=>i===toolDetail.index?{...t,toolType:v}:t)}))} />
+                    <Field label="Part #" value={toolDetail.partNumber || ""} onChange={v=>setDraft(p=>({...p,tools:p.tools.map((t,i)=>i===toolDetail.index?{...t,partNumber:v}:t)}))} />
+                    <Field label="Manufacturer" value={toolDetail.manufacturer || ""} onChange={v=>setDraft(p=>({...p,tools:p.tools.map((t,i)=>i===toolDetail.index?{...t,manufacturer:v}:t)}))} />
+                    <Field label="Flutes" value={toolDetail.flutes || ""} onChange={v=>setDraft(p=>({...p,tools:p.tools.map((t,i)=>i===toolDetail.index?{...t,flutes:v}:t)}))} />
+                    <Field label="Corner Radius" value={toolDetail.cornerRadius || ""} onChange={v=>setDraft(p=>({...p,tools:p.tools.map((t,i)=>i===toolDetail.index?{...t,cornerRadius:v}:t)}))} />
+                    <Field label="Flute Length" value={toolDetail.fluteLength || ""} onChange={v=>setDraft(p=>({...p,tools:p.tools.map((t,i)=>i===toolDetail.index?{...t,fluteLength:v}:t)}))} />
+                    <Field label="Stickout" value={toolDetail.stickout || ""} onChange={v=>setDraft(p=>({...p,tools:p.tools.map((t,i)=>i===toolDetail.index?{...t,stickout:v}:t)}))} />
+                    <Field label="Expected Life" value={toolDetail.expectedLife || ""} onChange={v=>setDraft(p=>({...p,tools:p.tools.map((t,i)=>i===toolDetail.index?{...t,expectedLife:v}:t)}))} />
+                    <Field label="Operation" value={toolDetail.operation || ""} onChange={v=>setDraft(p=>({...p,tools:p.tools.map((t,i)=>i===toolDetail.index?{...t,operation:v}:t)}))} />
+                    <Field label="Offsets" value={toolDetail.offsets || ""} onChange={v=>setDraft(p=>({...p,tools:p.tools.map((t,i)=>i===toolDetail.index?{...t,offsets:v}:t)}))} />
+                  </div>
+
+                  <button className="btn btn-primary" style={{marginTop:16,width:"100%"}} onClick={() => setToolDetail(null)}>
+                    Done
+                  </button>
+                </div>
+              )}
             </div>
 
-            <div className="subtle" style={{ marginTop: 6 }}>
-              Next modal lets you search inventory and set Qty per kit.
+            {/* FOOTER */}
+            <div style={{padding:24,borderTop:"1px solid var(--border)",background:"#f8fafc",display:"flex",justifyContent:"space-between"}}>
+              <button className="btn" onClick={() => setPopupOpen(false)}>Cancel</button>
+              <div style={{display:"flex",gap:12}}>
+                <button className="btn btn-primary" onClick={createKit}>Save Kit</button>
+                <button className="btn btn-success" onClick={()=>{createKit(); printSheet();}}>Create Setup Sheet</button>
+              </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* Requirements Editor (Phase 2, larger with quick filters) */}
-      {reqOpen && (
-        <RequirementsModal
-          job={jobKits.find((j) => j.id === reqJobId)}
-          tools={tools}
-          onClose={() => setReqOpen(false)}
-          onSave={(updated) => {
-            setJobKits((prev) =>
-              prev.map((j) => (j.id === updated.id ? { ...updated, updatedAt: nowISO() } : j))
-            );
-            setReqOpen(false);
-            note("Requirements saved");
-          }}
-        />
-      )}
-    </div>
-  );
-}
-
-/** ---------------- Requirements Modal ---------------- */
-function RequirementsModal({ job, tools, onClose, onSave }) {
-  const [search, setSearch] = useState("");
-  const [typeFilter, setTypeFilter] = useState("all"); // quick filter
-  const [reqs, setReqs] = useState(job?.requirements || []);
-  const [custom, setCustom] = useState({ name: "", qtyPerKit: "" });
-
-  useEffect(() => {
-    setReqs(job?.requirements || []);
-  }, [job]);
-
-  // Build set of available types (toolType/category; fallback to heuristic)
-  const allTypes = useMemo(() => {
-    const set = new Set();
-    const guessType = (t) => {
-      const hay = `${t.name || ""} ${t.description || ""}`.toLowerCase();
-      if (t.toolType) return t.toolType;
-      if (t.category) return t.category;
-      if (hay.includes("endmill") || hay.includes("end mill")) return "Endmill";
-      if (hay.includes("drill")) return "Drill";
-      if (hay.includes("tap")) return "Tap";
-      if (hay.includes("insert")) return "Insert";
-      if (hay.includes("ream")) return "Reamer";
-      if (hay.includes("holder") || hay.includes("collet")) return "Holder";
-      if (hay.includes("saw")) return "Saw";
-      if (hay.includes("burr")) return "Burr";
-      return "Other";
-    };
-    tools.forEach((t) => set.add(guessType(t)));
-    return ["all", ...Array.from(set).sort()];
-  }, [tools]);
-
-  const filterMatch = useCallback(
-    (t) => {
-      if (typeFilter === "all") return true;
-      const ty = (t.toolType || t.category || "").toString();
-      if (ty && ty.toLowerCase() === typeFilter.toLowerCase()) return true;
-
-      const hay = `${t.name || ""} ${t.description || ""}`.toLowerCase();
-      const map = {
-        Endmill: ["endmill", "end mill"],
-        Drill: ["drill"],
-        Tap: ["tap"],
-        Insert: ["insert"],
-        Reamer: ["ream"],
-        Holder: ["holder", "collet"],
-        Saw: ["saw"],
-        Burr: ["burr"],
-        Other: [],
-      };
-      const keys = map[typeFilter] || [];
-      if (keys.length === 0) {
-        return !/end ?mill|drill|tap|insert|ream|holder|collet|saw|burr/.test(hay);
-        }
-      return keys.some((k) => hay.includes(k));
-    },
-    [typeFilter]
-  );
-
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    let list = tools;
-    if (typeFilter !== "all") list = list.filter(filterMatch);
-    if (!q) return list.slice(0, 50);
-    return list
-      .filter((t) => {
-        const hay = [t.name, t.manufacturer, t.partNumber, t.description]
-          .filter(Boolean)
-          .join(" ")
-          .toLowerCase();
-        return hay.includes(q);
-      })
-      .slice(0, 50);
-  }, [tools, search, typeFilter, filterMatch]);
-
-  const addTool = (t) => {
-    setReqs((prev) => {
-      const idx = prev.findIndex((r) => r.toolId === t.id);
-      if (idx !== -1) {
-        const next = [...prev];
-        next[idx] = { ...next[idx], qtyPerKit: (next[idx].qtyPerKit || 0) + 1 };
-        return next;
-      }
-      return [
-        ...prev,
-        {
-          toolId: t.id,
-          name: t.name,
-          manufacturer: t.manufacturer || "",
-          partNumber: t.partNumber || "",
-          description: t.description || "",
-          qtyPerKit: 1,
-        },
-      ];
-    });
-  };
-
-  const addCustom = () => {
-    const name = custom.name.trim();
-    const qty = Math.max(1, parseInt(custom.qtyPerKit || 1, 10));
-    if (!name) return;
-    setReqs((prev) => [
-      ...prev,
-      {
-        toolId: null,
-        name,
-        manufacturer: "",
-        partNumber: "",
-        description: "",
-        qtyPerKit: qty,
-      },
-    ]);
-    setCustom({ name: "", qtyPerKit: "" });
-  };
-
-  const setQty = (toolId, nameKey, value) => {
-    const qty = Math.max(0, parseInt(value || 0, 10));
-    setReqs((prev) =>
-      prev.map((r) =>
-        (toolId ? r.toolId === toolId : r.toolId === null && r.name === nameKey)
-          ? { ...r, qtyPerKit: qty }
-          : r
-      )
-    );
-  };
-
-  const removeLine = (toolId, nameKey) => {
-    setReqs((prev) =>
-      prev.filter((r) => (toolId ? r.toolId !== toolId : !(r.toolId === null && r.name === nameKey)))
-    );
-  };
-
-  const save = () => {
-    onSave({ ...job, requirements: reqs });
-  };
-
-  return (
-    <div
-      onClick={onClose}
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,.35)",
-        display: "grid",
-        placeItems: "center",
-        zIndex: 60,
-      }}
-    >
-      <div
-        className="card"
-        onClick={(e) => e.stopPropagation()}
-        style={{ width: "min(1220px, 98vw)", padding: 16 }} // larger modal
-      >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <h3 style={{ margin: 0 }}>
-            Requirements — {job.project || "Untitled"} / {job.partName || "Part"}
-          </h3>
-          <button className="btn" onClick={onClose}>
-            Close
-          </button>
-        </div>
-
-        <div
-          style={{
-            marginTop: 12,
-            display: "grid",
-            gridTemplateColumns: "1.25fr 1fr",
-            gap: 16,
-          }}
-        >
-          {/* LEFT: inventory search & add */}
-          <section className="card" style={{ padding: 12 }}>
-            <div className="subtle" style={{ marginBottom: 6 }}>
-              Search your inventory and click Add
-            </div>
-
-            {/* quick filter chips */}
-            <div className="toolbar" style={{ marginBottom: 8, flexWrap: "wrap" }}>
-              {allTypes.map((ty) => (
-                <button
-                  key={ty}
-                  className={`pill ${typeFilter === ty ? "active" : ""}`}
-                  onClick={() => setTypeFilter(ty)}
-                >
-                  {ty === "all" ? "All Types" : ty}
-                </button>
-              ))}
-            </div>
-
-            <input
-              placeholder="Search name, manufacturer, part #, description…"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              style={{
-                width: "100%",
-                padding: "10px 12px",
-                border: "1px solid var(--border)",
-                borderRadius: 10,
-                outline: "none",
-                marginBottom: 10,
-              }}
-            />
-            <div style={{ maxHeight: 520, overflowY: "auto" }}>
-              {filtered.length === 0 ? (
-                <div className="subtle">No matches.</div>
-              ) : (
-                <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
-                  {filtered.map((t) => (
-                    <li
-                      key={t.id}
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: "1fr auto",
-                        alignItems: "center",
-                        gap: 10,
-                        padding: "8px 0",
-                        borderBottom: "1px solid var(--border)",
-                      }}
-                    >
-                      <div>
-                        <div style={{ fontWeight: 600 }}>{t.name || "(No name)"}</div>
-                        <div className="subtle">
-                          {(t.manufacturer || "—") + " · " + (t.partNumber || "—")}
-                          {t.description ? " · " + t.description : ""}
-                          {(t.toolType || t.category) ? " · " + (t.toolType || t.category) : ""}
-                        </div>
-                      </div>
-                      <button className="btn" onClick={() => addTool(t)}>
-                        Add
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-
-            <div className="subtle" style={{ marginTop: 10 }}>Add custom line (not in inventory)</div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 120px auto", gap: 8 }}>
-              <input
-                placeholder="Custom item name"
-                value={custom.name}
-                onChange={(e) => setCustom({ ...custom, name: e.target.value })}
-                style={{
-                  width: "100%",
-                  padding: "10px 12px",
-                  border: "1px solid var(--border)",
-                  borderRadius: 10,
-                  outline: "none",
-                }}
-              />
-              <input
-                type="number"
-                min="1"
-                placeholder="Qty/kit"
-                value={custom.qtyPerKit}
-                onChange={(e) => setCustom({ ...custom, qtyPerKit: e.target.value })}
-                style={{
-                  width: "100%",
-                  padding: "10px 12px",
-                  border: "1px solid var(--border)",
-                  borderRadius: 10,
-                  outline: "none",
-                }}
-              />
-              <button className="btn" onClick={addCustom}>
-                Add Custom
-              </button>
-            </div>
-          </section>
-
-          {/* RIGHT: selected requirements */}
-          <section className="card" style={{ padding: 12 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <h4 style={{ margin: "4px 0 8px" }}>Items in this kit</h4>
-              <div className="subtle">{reqs.length} line(s)</div>
-            </div>
-
-            {reqs.length === 0 ? (
-              <div className="subtle">No items yet. Add from the left, or add a custom line.</div>
-            ) : (
-              <ul style={{ listStyle: "none", margin: 0, padding: 0, maxHeight: 520, overflowY: "auto" }}>
-                {reqs.map((r) => (
-                  <li
-                    key={r.toolId ? r.toolId : `custom-${r.name}`}
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "1fr 120px auto",
-                      alignItems: "center",
-                      gap: 10,
-                      padding: "8px 0",
-                      borderBottom: "1px solid var(--border)",
-                    }}
-                  >
-                    <div>
-                      <div style={{ fontWeight: 600 }}>{r.name}</div>
-                      <div className="subtle">
-                        {r.toolId
-                          ? `${r.manufacturer || "—"} · ${r.partNumber || "—"}${r.description ? ` · ${r.description}` : ""}`
-                          : "Custom line"}
-                      </div>
-                    </div>
-                    <input
-                      type="number"
-                      min="0"
-                      value={r.qtyPerKit}
-                      onChange={(e) => setQty(r.toolId, r.name, e.target.value)}
-                      style={{
-                        width: "100%",
-                        padding: "10px 12px",
-                        border: "1px solid var(--border)",
-                        borderRadius: 10,
-                        outline: "none",
-                      }}
-                    />
-                    <button className="btn btn-danger" onClick={() => removeLine(r.toolId, r.name)}>
-                      Remove
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-
-            <div className="toolbar" style={{ marginTop: 12, justifyContent: "flex-end" }}>
-              <button className="btn" onClick={onClose}>
-                Cancel
-              </button>
-              <button className="btn btn-primary" onClick={save}>
-                Save Requirements
-              </button>
-            </div>
-          </section>
-        </div>
-      </div>
+      {/* TOAST */}
+      {toast && <div className="toast"><span>Checkmark</span><span>{toast}</span></div>}
     </div>
   );
 }
