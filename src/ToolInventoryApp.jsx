@@ -1,8 +1,59 @@
-// src/ToolInventoryApp.jsx
+// src/ToolInventoryApp.jsx - WITH TABS
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import "./modern-light.css";
 import LocationSection from "./LocationSection";
 import { LS, load, save } from "./storage";
+import ApprovalQueue from './components/ApprovalQueue';
+import NewProjectToolRequest from './components/NewProjectToolRequest';
+
+/* ──────── SIMPLE TAB SYSTEM ──────── */
+function Tabs({ children }) {
+  const [activeTab, setActiveTab] = useState(0);
+  const tabs = React.Children.toArray(children);
+  
+  return (
+    <div>
+      {/* Tab Headers */}
+      <div style={{ 
+        display: "flex", 
+        gap: 8, 
+        padding: "0 24px", 
+        marginTop: "16px",
+        borderBottom: "2px solid var(--border)",
+        background: "var(--card)"
+      }}>
+        {tabs.map((tab, i) => (
+          <button
+            key={i}
+            onClick={() => setActiveTab(i)}
+            style={{
+              padding: "12px 20px",
+              border: "none",
+              borderBottom: activeTab === i ? "3px solid var(--accent)" : "3px solid transparent",
+              background: activeTab === i ? "var(--accent-50)" : "transparent",
+              cursor: "pointer",
+              fontWeight: activeTab === i ? 700 : 400,
+              color: activeTab === i ? "var(--accent)" : "var(--text)",
+              borderRadius: "8px 8px 0 0",
+              transition: "all 0.2s ease"
+            }}
+          >
+            {tab.props.label}
+          </button>
+        ))}
+      </div>
+      
+      {/* Active Tab Content */}
+      <div>
+        {tabs[activeTab]}
+      </div>
+    </div>
+  );
+}
+
+function Tab({ children }) {
+  return <div>{children}</div>;
+}
 
 /* ──────── TAXONOMY ──────── */
 const MACHINE_GROUPS_BASE = ["", "Milling", "Swiss", "Lathe", "Wire EDM", "Inspection", "General", "Other…"];
@@ -525,8 +576,6 @@ const StatusBadge = ({ status }) => {
   );
 };
 
-
-
 /* ──────── MAIN APP ──────── */
 export default function ToolInventoryApp() {
   const [tools, setTools] = useState([]);
@@ -593,6 +642,9 @@ export default function ToolInventoryApp() {
         machineGroup: x.machineGroup ?? "",
         toolType: x.toolType ?? ""
       }));
+
+    setTools(norm(load(LS.tools, [])));
+    setQueue(norm(load(LS.queue, [])));
 
     const loadedOrders = (load(LS.orders, []) || []).map(o => ({
       orderId: o.orderId ?? `${o.id}-${Date.now()}`,
@@ -750,44 +802,41 @@ export default function ToolInventoryApp() {
       })
     );
 
-// Mark PO as paid (THIS IS WHEN SPEND COUNTS!)
-const markPaid = (orderId) => {
-  setOrders(p => p.map(o => 
-    o.orderId === orderId 
-      ? { ...o, status: "paid", datePaid: new Date().toISOString() }
-      : o
-  ));
-  note("Marked as paid 💰");
-};
+  const markPaid = (orderId) => {
+    setOrders(p => p.map(o => 
+      o.orderId === orderId 
+        ? { ...o, status: "paid", datePaid: new Date().toISOString() }
+        : o
+    ));
+    note("Marked as paid 💰");
+  };
 
-// Receive order and add to inventory
-const receiveOrder = (orderId) => {
-  const o = orders.find(x => x.orderId === orderId);
-  if (!o) return;
-  
-  const qty = prompt(`Qty received for "${o.name}" (ordered ${o.quantity}):`, o.quantity);
-  if (!qty) return;
-  
-  const n = Math.max(0, parseInt(qty) || 0);
-  setTools(p => p.map(t => 
-    t.id === o.toolId 
-      ? { ...t, quantity: t.quantity + n } 
-      : t
-  ));
-  setOrders(p => p.map(order => 
-    order.orderId === orderId
-      ? { ...order, status: "received", dateReceived: new Date().toISOString() }
-      : order
-  ));
-  note(`+${n} received ✅`);
-};
+  const receiveOrder = (orderId) => {
+    const o = orders.find(x => x.orderId === orderId);
+    if (!o) return;
+    
+    const qty = prompt(`Qty received for "${o.name}" (ordered ${o.quantity}):`, o.quantity);
+    if (!qty) return;
+    
+    const n = Math.max(0, parseInt(qty) || 0);
+    setTools(p => p.map(t => 
+      t.id === o.toolId 
+        ? { ...t, quantity: t.quantity + n } 
+        : t
+    ));
+    setOrders(p => p.map(order => 
+      order.orderId === orderId
+        ? { ...order, status: "received", dateReceived: new Date().toISOString() }
+        : order
+    ));
+    note(`+${n} received ✅`);
+  };
 
-// Delete a PO (optional - for mistakes)
-const deletePO = (orderId) => {
-  if (!window.confirm("Delete this PO?")) return;
-  setOrders(p => p.filter(o => o.orderId !== orderId));
-  note("PO deleted 🗑️");
-};
+  const deletePO = (orderId) => {
+    if (!window.confirm("Delete this PO?")) return;
+    setOrders(p => p.filter(o => o.orderId !== orderId));
+    note("PO deleted 🗑️");
+  };
 
   const delTool = id => {
     if (window.confirm("Delete this tool?")) {
@@ -805,33 +854,6 @@ const deletePO = (orderId) => {
   };
 
   const rmQueue = id => setQueue(p => p.filter(t => t.id !== id));
-
-  const ordered = id => {
-    const t = tools.find(x => x.id === id);
-    setOrders(p => [
-      ...p,
-      {
-        orderId: `${id}-${Date.now()}`,
-        id,
-        name: t.name,
-        quantity: t.threshold || 1,
-        price: t.price,
-        orderedAt: new Date().toISOString()
-      }
-    ]);
-    rmQueue(id);
-    note("Ordered 🧾");
-  };
-
-  const received = orderId => {
-    const o = orders.find(x => x.orderId === orderId);
-    const qty = prompt(`Qty received for "${o.name}"`, o.quantity);
-    if (!qty) return;
-    const n = Math.max(0, parseInt(qty) || 0);
-    setTools(p => p.map(t => (t.id === o.id ? { ...t, quantity: t.quantity + n } : t)));
-    setOrders(p => p.filter(x => x.orderId !== orderId));
-    note(`+${n} received ✅`);
-  };
 
   const receiveAll = () => {
     if (!queue.length) return;
@@ -898,645 +920,661 @@ const deletePO = (orderId) => {
         </div>
       </div>
 
-      {/* STATS */}
-      <div
-        className="metrics"
-        style={{
-          margin: "16px 24px 0",
-          gap: 16,
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))"
-        }}
-      >
-        <div className="metric card stat-accent">
-          <div className="label">Low/Zero</div>
-          <div className="value">{tools.filter(t => t.quantity <= t.threshold).length}</div>
-        </div>
-        <div className="metric card">
-          <div className="label">Queue</div>
-          <div className="value">{queue.length}</div>
-        </div>
-        <div className="metric card">
-          <div className="label">POs</div>
-          <div className="value">{orders.length}</div>
-        </div>
-        <div className="metric card">
-          <div className="label">Value</div>
-          <div className="value">{money(totalVal)}</div>
-        </div>
-      </div>
-
-      {/* FILTERS */}
-      <div
-        className="controls"
-        style={{
-          margin: "16px 24px 0",
-          display: "flex",
-          gap: 12,
-          flexWrap: "wrap",
-          alignItems: "end"
-        }}
-      >
-        <div className="search" style={{ flex: 1, minWidth: 280 }}>
-          <input placeholder="Search anything…" onChange={e => setSearch(e.target.value)} />
-        </div>
-        <Select label="Machine" value={fMach} onChange={setFMach} options={machOpts} />
-        <Select label="Type" value={fType} onChange={setFType} options={typeOpts} />
-      </div>
-
-      {/* ADD FORM */}
-      <div className="card form" style={{ margin: "16px 24px 0" }}>
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))",
-            gap: 12,
-            padding: 16
-          }}
-        >
-          <Input
-            label="Name"
-            value={form.name}
-            onChange={v => setForm(p => ({ ...p, name: v }))}
-            error={errors.name}
-          />
-          <Input
-            label="Mfr"
-            value={form.manufacturer}
-            onChange={v => setForm(p => ({ ...p, manufacturer: v }))}
-          />
-          <Input
-            label="Part#"
-            value={form.partNumber}
-            onChange={v => setForm(p => ({ ...p, partNumber: v }))}
-          />
-          <Input
-            label="Desc"
-            value={form.description}
-            onChange={v => setForm(p => ({ ...p, description: v }))}
-          />
-          <Input
-            label="Qty"
-            type="number"
-            value={form.quantity}
-            onChange={v => setForm(p => ({ ...p, quantity: v }))}
-            error={errors.quantity}
-          />
-          <Input
-            label="Low"
-            type="number"
-            value={form.threshold}
-            onChange={v => setForm(p => ({ ...p, threshold: v }))}
-            error={errors.threshold}
-          />
-          <Input
-            label="Price"
-            type="number"
-            step="0.01"
-            value={form.price}
-            onChange={v => setForm(p => ({ ...p, price: v }))}
-            error={errors.price}
-          />
-          <SelectWithOther
-            label="Machine"
-            value={form.machineGroup}
-            setValue={v => setForm(p => ({ ...p, machineGroup: v }))}
-            baseOptions={MACHINE_GROUPS_BASE}
-          />
-          <SelectWithOther
-            label="Type"
-            value={form.toolType}
-            setValue={v => setForm(p => ({ ...p, toolType: v }))}
-            baseOptions={TOOL_TYPES_BASE}
-          />
-          <div style={{ display: "flex", alignItems: "end" }}>
-            <button className="btn btn-primary" style={{ width: "100%" }} onClick={addTool}>
-              Add Tool
-            </button>
+      {/* ═══════════════════════════════════════════════════════
+          TABS START HERE
+          ═══════════════════════════════════════════════════════ */}
+      <Tabs>
+        {/* ═══════════════ TAB 1: INVENTORY ═══════════════ */}
+        <Tab label="📦 Inventory">
+          {/* STATS */}
+          <div
+            className="metrics"
+            style={{
+              margin: "16px 24px 0",
+              gap: 16,
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))"
+            }}
+          >
+            <div className="metric card stat-accent">
+              <div className="label">Low/Zero</div>
+              <div className="value">{tools.filter(t => t.quantity <= t.threshold).length}</div>
+            </div>
+            <div className="metric card">
+              <div className="label">Queue</div>
+              <div className="value">{queue.length}</div>
+            </div>
+            <div className="metric card">
+              <div className="label">POs</div>
+              <div className="value">{orders.length}</div>
+            </div>
+            <div className="metric card">
+              <div className="label">Value</div>
+              <div className="value">{money(totalVal)}</div>
+            </div>
           </div>
-        </div>
-      </div>
 
-      {/* MAIN LAYOUT */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "1fr 340px",
-          gap: 24,
-          margin: "16px 24px 0"
-        }}
-      >
-        {/* TABLE */}
-        <div className="card table-wrap">
-          <div className="table-scroll">
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Item</th>
-                  <th>On Hand</th>
-                  <th>Vendor</th>
-                  <th>Value</th>
-                  <th>Actions</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.length === 0 && (
-                  <tr>
-                    <td colSpan={6} className="subtle">
-                      Nothing matches
-                    </td>
-                  </tr>
-                )}
-                {filtered.map(t => {
-                  const low = t.quantity <= t.threshold;
-                  const zero = t.quantity === 0;
-                  const pct = Math.min(100, Math.round((t.quantity / (t.threshold * 2 || 10)) * 100));
+          {/* FILTERS */}
+          <div
+            className="controls"
+            style={{
+              margin: "16px 24px 0",
+              display: "flex",
+              gap: 12,
+              flexWrap: "wrap",
+              alignItems: "end"
+            }}
+          >
+            <div className="search" style={{ flex: 1, minWidth: 280 }}>
+              <input placeholder="Search anything…" onChange={e => setSearch(e.target.value)} />
+            </div>
+            <Select label="Machine" value={fMach} onChange={setFMach} options={machOpts} />
+            <Select label="Type" value={fType} onChange={setFType} options={typeOpts} />
+          </div>
 
-                  return (
-                    <tr
-                      key={t.id}
-                      onClick={() => setSelId(t.id)}
-                      style={{
-                        cursor: "pointer",
-                        background: selId === t.id ? "var(--accent-50)" : ""
-                      }}
-                    >
-                      <td>
-                        <div style={{ fontWeight: 600 }}>{t.name}</div>
-                        <div className="subtle">
-                          {t.manufacturer} · {t.partNumber}
-                        </div>
-                        {(t.machineGroup || t.toolType) && (
-                          <div
-                            className="subtle"
-                            style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}
-                          >
-                            {t.machineGroup && <span className="badge pill">{t.machineGroup}</span>}
-                            {t.toolType && <span className="badge pill">{t.toolType}</span>}
-                          </div>
-                        )}
-                      </td>
-                      <td>
-                        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                          <input
-                            type="number"
-                            min="0"
-                            value={t.quantity}
-                            onChange={e =>
-                              setTools(p =>
-                                p.map(x =>
-                                  x.id === t.id
-                                    ? { ...x, quantity: Math.max(0, parseInt(e.target.value) || 0) }
-                                    : x
-                                )
-                              )
-                            }
-                            onClick={e => e.stopPropagation()}
-                            style={{
-                              width: 80,
-                              padding: "8px 10px",
-                              border: "1px solid var(--border)",
-                              borderRadius: 8,
-                              background: "var(--card)",
-                              fontWeight: 600,
-                              textAlign: "center",
-                              color: "var(--text)"
-                            }}
-                          />
-                          <div style={{ flex: 1 }}>
-                            <div className="progress">
-                              <span
+          {/* ADD FORM */}
+          <div className="card form" style={{ margin: "16px 24px 0" }}>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))",
+                gap: 12,
+                padding: 16
+              }}
+            >
+              <Input
+                label="Name"
+                value={form.name}
+                onChange={v => setForm(p => ({ ...p, name: v }))}
+                error={errors.name}
+              />
+              <Input
+                label="Mfr"
+                value={form.manufacturer}
+                onChange={v => setForm(p => ({ ...p, manufacturer: v }))}
+              />
+              <Input
+                label="Part#"
+                value={form.partNumber}
+                onChange={v => setForm(p => ({ ...p, partNumber: v }))}
+              />
+              <Input
+                label="Desc"
+                value={form.description}
+                onChange={v => setForm(p => ({ ...p, description: v }))}
+              />
+              <Input
+                label="Qty"
+                type="number"
+                value={form.quantity}
+                onChange={v => setForm(p => ({ ...p, quantity: v }))}
+                error={errors.quantity}
+              />
+              <Input
+                label="Low"
+                type="number"
+                value={form.threshold}
+                onChange={v => setForm(p => ({ ...p, threshold: v }))}
+                error={errors.threshold}
+              />
+              <Input
+                label="Price"
+                type="number"
+                step="0.01"
+                value={form.price}
+                onChange={v => setForm(p => ({ ...p, price: v }))}
+                error={errors.price}
+              />
+              <SelectWithOther
+                label="Machine"
+                value={form.machineGroup}
+                setValue={v => setForm(p => ({ ...p, machineGroup: v }))}
+                baseOptions={MACHINE_GROUPS_BASE}
+              />
+              <SelectWithOther
+                label="Type"
+                value={form.toolType}
+                setValue={v => setForm(p => ({ ...p, toolType: v }))}
+                baseOptions={TOOL_TYPES_BASE}
+              />
+              <div style={{ display: "flex", alignItems: "end" }}>
+                <button className="btn btn-primary" style={{ width: "100%" }} onClick={addTool}>
+                  Add Tool
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* MAIN LAYOUT */}
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr 340px",
+              gap: 24,
+              margin: "16px 24px 0"
+            }}
+          >
+            {/* TABLE */}
+            <div className="card table-wrap">
+              <div className="table-scroll">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Item</th>
+                      <th>On Hand</th>
+                      <th>Vendor</th>
+                      <th>Value</th>
+                      <th>Actions</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filtered.length === 0 && (
+                      <tr>
+                        <td colSpan={6} className="subtle">
+                          Nothing matches
+                        </td>
+                      </tr>
+                    )}
+                    {filtered.map(t => {
+                      const low = t.quantity <= t.threshold;
+                      const zero = t.quantity === 0;
+                      const pct = Math.min(100, Math.round((t.quantity / (t.threshold * 2 || 10)) * 100));
+
+                      return (
+                        <tr
+                          key={t.id}
+                          onClick={() => setSelId(t.id)}
+                          style={{
+                            cursor: "pointer",
+                            background: selId === t.id ? "var(--accent-50)" : ""
+                          }}
+                        >
+                          <td>
+                            <div style={{ fontWeight: 600 }}>{t.name}</div>
+                            <div className="subtle">
+                              {t.manufacturer} · {t.partNumber}
+                            </div>
+                            {(t.machineGroup || t.toolType) && (
+                              <div
+                                className="subtle"
+                                style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}
+                              >
+                                {t.machineGroup && <span className="badge pill">{t.machineGroup}</span>}
+                                {t.toolType && <span className="badge pill">{t.toolType}</span>}
+                              </div>
+                            )}
+                          </td>
+                          <td>
+                            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                              <input
+                                type="number"
+                                min="0"
+                                value={t.quantity}
+                                onChange={e =>
+                                  setTools(p =>
+                                    p.map(x =>
+                                      x.id === t.id
+                                        ? { ...x, quantity: Math.max(0, parseInt(e.target.value) || 0) }
+                                        : x
+                                    )
+                                  )
+                                }
+                                onClick={e => e.stopPropagation()}
                                 style={{
-                                  width: `${pct}%`,
-                                  background: zero ? "#ef4444" : low ? "#f59e0b" : "#10b981"
+                                  width: 80,
+                                  padding: "8px 10px",
+                                  border: "1px solid var(--border)",
+                                  borderRadius: 8,
+                                  background: "var(--card)",
+                                  fontWeight: 600,
+                                  textAlign: "center",
+                                  color: "var(--text)"
                                 }}
                               />
+                              <div style={{ flex: 1 }}>
+                                <div className="progress">
+                                  <span
+                                    style={{
+                                      width: `${pct}%`,
+                                      background: zero ? "#ef4444" : low ? "#f59e0b" : "#10b981"
+                                    }}
+                                  />
+                                </div>
+                                <div className="subtle" style={{ fontSize: 11 }}>
+                                  min {t.threshold}
+                                </div>
+                              </div>
                             </div>
-                            <div className="subtle" style={{ fontSize: 11 }}>
-                              min {t.threshold}
+                          </td>
+                          <td>{t.vendor || "—"}</td>
+                          <td style={{ textAlign: "right" }}>{money(t.quantity * t.price)}</td>
+                          <td style={{ whiteSpace: "nowrap" }}>
+                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                              <button
+                                className="btn"
+                                onClick={e => {
+                                  e.stopPropagation();
+                                  updQty(t.id, -1);
+                                }}
+                              >
+                                −1
+                              </button>
+                              <button
+                                className="btn btn-primary"
+                                onClick={e => {
+                                  e.stopPropagation();
+                                  navigator.clipboard.writeText(JSON.stringify({ toolId: t.id, qty: 1 }));
+                                  note("QR copied — scan!");
+                                }}
+                              >
+                                📱 Pull
+                              </button>
+                              <button
+                                className="btn"
+                                onClick={e => {
+                                  e.stopPropagation();
+                                  toQueue(t);
+                                }}
+                              >
+                                Reorder
+                              </button>
+                              <button
+                                className="btn"
+                                onClick={e => {
+                                  e.stopPropagation();
+                                  setModal({ ...t, projects: t.projects.join(", ") });
+                                  setModalOpen(true);
+                                }}
+                              >
+                                Edit
+                              </button>
+                              <button
+                                className="btn btn-danger"
+                                onClick={e => {
+                                  e.stopPropagation();
+                                  delTool(t.id);
+                                }}
+                              >
+                                Del
+                              </button>
                             </div>
-                          </div>
-                        </div>
-                      </td>
-                      <td>{t.vendor || "—"}</td>
-                      <td style={{ textAlign: "right" }}>{money(t.quantity * t.price)}</td>
-                      <td style={{ whiteSpace: "nowrap" }}>
-                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                          <button
-                            className="btn"
-                            onClick={e => {
-                              e.stopPropagation();
-                              updQty(t.id, -1);
-                            }}
-                          >
-                            −1
-                          </button>
-                          <button
-                            className="btn btn-primary"
-                            onClick={e => {
-                              e.stopPropagation();
-                              navigator.clipboard.writeText(JSON.stringify({ toolId: t.id, qty: 1 }));
-                              note("QR copied — scan!");
-                            }}
-                          >
-                            📱 Pull
-                          </button>
-                          <button
-                            className="btn"
-                            onClick={e => {
-                              e.stopPropagation();
-                              toQueue(t);
-                            }}
-                          >
-                            Reorder
-                          </button>
-                          <button
-                            className="btn"
-                            onClick={e => {
-                              e.stopPropagation();
-                              setModal({ ...t, projects: t.projects.join(", ") });
-                              setModalOpen(true);
-                            }}
-                          >
-                            Edit
-                          </button>
-                          <button
-                            className="btn btn-danger"
-                            onClick={e => {
-                              e.stopPropagation();
-                              delTool(t.id);
-                            }}
-                          >
-                            Del
-                          </button>
-                        </div>
-                      </td>
-                      <td>
-                        {zero ? (
-                          <span className="badge zero">❌ Out</span>
-                        ) : low ? (
-                          <span className="badge low">⚠️ Low</span>
-                        ) : (
-                          <span className="badge ok">✅ OK</span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
+                          </td>
+                          <td>
+                            {zero ? (
+                              <span className="badge zero">❌ Out</span>
+                            ) : low ? (
+                              <span className="badge low">⚠️ Low</span>
+                            ) : (
+                              <span className="badge ok">✅ OK</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
 
-        {/* SIDEBAR */}
-        <aside style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          {sel ? (
-            <div className="card" style={{ padding: 16, boxShadow: "var(--shadow)" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start" }}>
-                <div>
-                  <h2 style={{ margin: 0, fontSize: 20 }}>{sel.name}</h2>
-                  <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 4 }}>
-                    {sel.manufacturer} · {sel.partNumber}
+            {/* SIDEBAR */}
+            <aside style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              {sel ? (
+                <div className="card" style={{ padding: 16, boxShadow: "var(--shadow)" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start" }}>
+                    <div>
+                      <h2 style={{ margin: 0, fontSize: 20 }}>{sel.name}</h2>
+                      <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 4 }}>
+                        {sel.manufacturer} · {sel.partNumber}
+                      </div>
+                    </div>
+                    <span
+                      className={`badge ${
+                        sel.quantity === 0 ? "zero" : sel.quantity <= sel.threshold ? "low" : "ok"
+                      }`}
+                      style={{ fontSize: 11 }}
+                    >
+                      {sel.quantity === 0 ? "OUT" : sel.quantity <= sel.threshold ? "LOW" : "OK"}
+                    </span>
+                  </div>
+
+                  <svg
+                    width="100%"
+                    height="100"
+                    viewBox="0 0 300 100"
+                    style={{
+                      margin: "16px 0",
+                      background: "var(--card)",
+                      borderRadius: 8,
+                      border: "1px solid var(--border)"
+                    }}
+                  >
+                    <path
+                      d={sparklinePath(fakeHistory(sel.quantity, sel.threshold), 300, 100)}
+                      fill="none"
+                      stroke="#3b82f6"
+                      strokeWidth="3"
+                    />
+                    <line x1="0" x2="300" y1="80" y2="80" stroke="#f97316" strokeDasharray="6 6" />
+                  </svg>
+
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "1fr 1fr",
+                      gap: 12,
+                      fontSize: 14
+                    }}
+                  >
+                    <div>
+                      <div style={{ color: "var(--muted)" }}>On Hand</div>
+                      <div style={{ fontWeight: 700, fontSize: 20 }}>{sel.quantity}</div>
+                    </div>
+                    <div>
+                      <div style={{ color: "var(--muted)" }}>Incoming</div>
+                      <div style={{ fontWeight: 700, fontSize: 20 }}>
+                        {orders.filter(o => o.toolId === sel.id && o.status !== "received").length}
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{ color: "var(--muted)" }}>Need</div>
+                      <div style={{ fontWeight: 700, fontSize: 20 }}>
+                        {Math.max(0, sel.threshold - sel.quantity)}
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{ color: "var(--muted)" }}>Value</div>
+                      <div style={{ fontWeight: 700, fontSize: 20 }}>{money(sel.quantity * sel.price)}</div>
+                    </div>
+                  </div>
+
+                  <div style={{ marginTop: 16, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <button
+                      className="btn"
+                      style={{ flex: 1 }}
+                      onClick={() => updQty(sel.id, -1)}
+                    >
+                      -1
+                    </button>
+                    <button
+                      className="btn btn-primary"
+                      style={{ flex: 2 }}
+                      onClick={() => {
+                        navigator.clipboard.writeText(JSON.stringify({ toolId: sel.id, qty: 1 }));
+                        note("QR copied!");
+                      }}
+                    >
+                      📱 Pull
+                    </button>
+                    <button
+                      className="btn btn-success"
+                      style={{ flex: 2 }}
+                      onClick={() => openPOModal(sel)}
+                    >
+                      Create PO
+                    </button>
                   </div>
                 </div>
-                <span
-                  className={`badge ${
-                    sel.quantity === 0 ? "zero" : sel.quantity <= sel.threshold ? "low" : "ok"
-                  }`}
-                  style={{ fontSize: 11 }}
-                >
-                  {sel.quantity === 0 ? "OUT" : sel.quantity <= sel.threshold ? "LOW" : "OK"}
-                </span>
-              </div>
-
-              <svg
-                width="100%"
-                height="100"
-                viewBox="0 0 300 100"
-                style={{
-                  margin: "16px 0",
-                  background: "var(--card)",
-                  borderRadius: 8,
-                  border: "1px solid var(--border)"
-                }}
-              >
-                <path
-                  d={sparklinePath(fakeHistory(sel.quantity, sel.threshold), 300, 100)}
-                  fill="none"
-                  stroke="#3b82f6"
-                  strokeWidth="3"
-                />
-                <line x1="0" x2="300" y1="80" y2="80" stroke="#f97316" strokeDasharray="6 6" />
-              </svg>
+              ) : (
+                <div className="card" style={{ padding: 32, textAlign: "center", color: "var(--muted)" }}>
+                  <div style={{ fontSize: 48 }}>🛠️</div>
+                  <p style={{ margin: "12px 0 0", fontSize: 14 }}>
+                    Select a tool to see
+                    <br />
+                    details and history
+                  </p>
+                </div>
+              )}
 
               <div
                 style={{
                   display: "grid",
                   gridTemplateColumns: "1fr 1fr",
                   gap: 12,
-                  fontSize: 14
+                  fontSize: 13
                 }}
               >
-                <div>
-                  <div style={{ color: "var(--muted)" }}>On Hand</div>
-                  <div style={{ fontWeight: 700, fontSize: 20 }}>{sel.quantity}</div>
+                <div className="card" style={{ padding: 12, textAlign: "center" }}>
+                  <div style={{ color: "var(--muted)" }}>Total Tools</div>
+                  <div style={{ fontWeight: 700, fontSize: 18 }}>{tools.length}</div>
                 </div>
-                <div>
-                  <div style={{ color: "var(--muted)" }}>Incoming</div>
-                  <div style={{ fontWeight: 700, fontSize: 20 }}>
-                    {orders.filter(o => o.toolId === sel.id && o.status !== "received").length}
-                  </div>
-                </div>
-                <div>
-                  <div style={{ color: "var(--muted)" }}>Need</div>
-                  <div style={{ fontWeight: 700, fontSize: 20 }}>
-                    {Math.max(0, sel.threshold - sel.quantity)}
-                  </div>
-                </div>
-                <div>
-                  <div style={{ color: "var(--muted)" }}>Value</div>
-                  <div style={{ fontWeight: 700, fontSize: 20 }}>{money(sel.quantity * sel.price)}</div>
+                <div className="card" style={{ padding: 12, textAlign: "center" }}>
+                  <div style={{ color: "var(--muted)" }}>Queue</div>
+                  <div style={{ fontWeight: 700, fontSize: 18 }}>{queue.length}</div>
                 </div>
               </div>
+            </aside>
+          </div>
 
-              {/* FIXED BUTTON ROW */}
-              <div style={{ marginTop: 16, display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <button
-                  className="btn"
-                  style={{ flex: 1 }}
-                  onClick={() => updQty(sel.id, -1)}
-                >
-                  -1
-                </button>
-                <button
-                  className="btn btn-primary"
-                  style={{ flex: 2 }}
-                  onClick={() => {
-                    navigator.clipboard.writeText(JSON.stringify({ toolId: sel.id, qty: 1 }));
-                    note("QR copied!");
-                  }}
-                >
-                  📱 Pull
-                </button>
-                <button
-                  className="btn btn-success"
-                  style={{ flex: 2 }}
-                  onClick={() => openPOModal(sel)}
-                >
-                  Create PO
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="card" style={{ padding: 32, textAlign: "center", color: "var(--muted)" }}>
-              <div style={{ fontSize: 48 }}>🛠️</div>
-              <p style={{ margin: "12px 0 0", fontSize: 14 }}>
-                Select a tool to see
-                <br />
-                details and history
-              </p>
-            </div>
-          )}
-
+          {/* QUEUE + POs */}
           <div
             style={{
+              margin: "24px 24px 0",
               display: "grid",
-              gridTemplateColumns: "1fr 1fr",
-              gap: 12,
-              fontSize: 13
+              gridTemplateColumns: "repeat(auto-fit,minmax(340px,1fr))",
+              gap: 16
             }}
           >
-            <div className="card" style={{ padding: 12, textAlign: "center" }}>
-              <div style={{ color: "var(--muted)" }}>Total Tools</div>
-              <div style={{ fontWeight: 700, fontSize: 18 }}>{tools.length}</div>
-            </div>
-            <div className="card" style={{ padding: 12, textAlign: "center" }}>
-              <div style={{ color: "var(--muted)" }}>Queue</div>
-              <div style={{ fontWeight: 700, fontSize: 18 }}>{queue.length}</div>
-            </div>
-          </div>
-        </aside>
-      </div>
-
-      {/* QUEUE + POs */}
-      <div
-        style={{
-          margin: "24px 24px 0",
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit,minmax(340px,1fr))",
-          gap: 16
-        }}
-      >
-        {/* REORDER QUEUE */}
-        <div className="card" style={{ padding: 0, boxShadow: "var(--shadow)" }}>
-          <div
-            style={{
-              padding: "16px 20px",
-              background: "#fef3c7",
-              borderBottom: "1px solid #fde68a",
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center"
-            }}
-          >
-            <strong style={{ fontSize: 16, color: "#78350f" }}>📦 Reorder Queue ({queue.length})</strong>
-            <button className="btn btn-success btn-sm" onClick={receiveAll}>
-              Receive All
-            </button>
-          </div>
-          <div style={{ maxHeight: 340, overflow: "auto" }}>
-            {queue.length === 0 ? (
-              <div style={{ padding: 40, textAlign: "center", color: "var(--muted)" }}>
-                <div style={{ fontSize: 48 }}>✨</div>
-                <p>No items — you're golden!</p>
+            {/* REORDER QUEUE */}
+            <div className="card" style={{ padding: 0, boxShadow: "var(--shadow)" }}>
+              <div
+                style={{
+                  padding: "16px 20px",
+                  background: "#fef3c7",
+                  borderBottom: "1px solid #fde68a",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center"
+                }}
+              >
+                <strong style={{ fontSize: 16, color: "#78350f" }}>📦 Reorder Queue ({queue.length})</strong>
+                <button className="btn btn-success btn-sm" onClick={receiveAll}>
+                  Receive All
+                </button>
               </div>
-            ) : (
-              <ul style={{ margin: 0, padding: 0, listStyle: "none" }}>
-                {[...new Map(queue.map(t => [t.id, t])).values()].map(t => (
-                  <li
-                    key={t.id}
-                    style={{
-                      padding: "12px 20px",
-                      borderBottom: "1px dashed var(--border)",
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center"
-                    }}
-                  >
-                    <div>
-                      <div style={{ fontWeight: 600 }}>{t.name}</div>
-                      <div style={{ fontSize: 12, color: "var(--muted)" }}>
-                        need {t.threshold} • {t.quantity} on hand
-                      </div>
-                    </div>
-                    <div style={{ display: "flex", gap: 8 }}>
-                      <button className="btn btn-success btn-sm" onClick={() => openPOModal(t)}>
-                        Create PO
-                      </button>
-                      <button className="btn btn-danger btn-sm" onClick={() => rmQueue(t.id)}>
-                        ×
-                      </button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </div>
-
-{/* PENDING POs */}
-        <div className="card" style={{ padding: 0, boxShadow: "var(--shadow)" }}>
-          <div style={{ 
-            padding: "16px 20px", 
-            background: "#dbeafe", 
-            borderBottom: "1px solid #93c5fd",
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center"
-          }}>
-            <strong style={{ fontSize: 16, color: "#1e3a8a" }}>
-              🧾 Purchase Orders ({orders.length})
-            </strong>
-            <div style={{ fontSize: 11, color: "#1e40af" }}>
-              {orders.filter(o => o.status === "paid").length} paid
-            </div>
-          </div>
-          <div style={{ maxHeight: 400, overflow: "auto" }}>
-            {orders.length === 0 ? (
-              <div style={{ padding: 40, textAlign: "center", color: "var(--muted)" }}>
-                <div style={{ fontSize: 48 }}>📋</div>
-                <p style={{ margin: "8px 0 0" }}>No purchase orders yet</p>
-              </div>
-            ) : (
-              <ul style={{ margin: 0, padding: 0, listStyle: "none" }}>
-                {orders.map(o => {
-                  const totalCost = (o.quantity * o.unitPrice) + (o.shippingCost || 0);
-                  const isRush = o.shippingType && o.shippingType !== "Standard";
-                  
-                  return (
-                    <li 
-                      key={o.orderId} 
-                      style={{ 
-                        padding: "14px 20px", 
-                        borderBottom: "1px dashed var(--border)",
-                        background: o.status === "received" ? "var(--bg)" : "transparent"
-                      }}
-                    >
-                      {/* Top Row: Name & Status */}
-                      <div style={{ 
-                        display: "flex", 
-                        justifyContent: "space-between", 
-                        alignItems: "center",
-                        marginBottom: 8
-                      }}>
+              <div style={{ maxHeight: 340, overflow: "auto" }}>
+                {queue.length === 0 ? (
+                  <div style={{ padding: 40, textAlign: "center", color: "var(--muted)" }}>
+                    <div style={{ fontSize: 48 }}>✨</div>
+                    <p>No items — you're golden!</p>
+                  </div>
+                ) : (
+                  <ul style={{ margin: 0, padding: 0, listStyle: "none" }}>
+                    {[...new Map(queue.map(t => [t.id, t])).values()].map(t => (
+                      <li
+                        key={t.id}
+                        style={{
+                          padding: "12px 20px",
+                          borderBottom: "1px dashed var(--border)",
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center"
+                        }}
+                      >
                         <div>
-                          <div style={{ fontWeight: 600, color: "var(--text)" }}>
-                            {o.name}
-                          </div>
-                          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>
-                            PO: {o.poNumber} • {o.vendor || "—"}
+                          <div style={{ fontWeight: 600 }}>{t.name}</div>
+                          <div style={{ fontSize: 12, color: "var(--muted)" }}>
+                            need {t.threshold} • {t.quantity} on hand
                           </div>
                         </div>
-                        <StatusBadge status={o.status} />
-                      </div>
-
-                      {/* Details Row */}
-                      <div style={{ 
-                        fontSize: 12, 
-                        color: "var(--muted)", 
-                        marginBottom: 8,
-                        display: "grid",
-                        gridTemplateColumns: "1fr 1fr",
-                        gap: 8
-                      }}>
-                        <div>
-                          Qty: <strong style={{ color: "var(--text)" }}>{o.quantity}</strong> × {money(o.unitPrice)}
-                        </div>
-                        <div>
-                          Ship: {money(o.shippingCost || 0)}
-                          {isRush && <span style={{ color: "#f59e0b", marginLeft: 4 }}>⚡ {o.shippingType}</span>}
-                        </div>
-                      </div>
-
-                      {/* Total & Date */}
-                      <div style={{ 
-                        display: "flex", 
-                        justifyContent: "space-between",
-                        alignItems: "center",
-                        marginBottom: 10
-                      }}>
-                        <div style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)" }}>
-                          Total: {money(totalCost)}
-                        </div>
-                        <div style={{ fontSize: 11, color: "var(--muted)" }}>
-                          {o.status === "ordered" && `Ordered ${new Date(o.dateOrdered).toLocaleDateString()}`}
-                          {o.status === "paid" && `Paid ${new Date(o.datePaid).toLocaleDateString()}`}
-                          {o.status === "received" && `Received ${new Date(o.dateReceived).toLocaleDateString()}`}
-                        </div>
-                      </div>
-
-                      {/* Action Buttons */}
-                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                        {o.status === "ordered" && (
-                          <>
-                            <button 
-                              className="btn btn-primary btn-sm" 
-                              onClick={() => markPaid(o.orderId)}
-                            >
-                              Mark Paid
-                            </button>
-                            <button 
-                              className="btn btn-danger btn-sm" 
-                              onClick={() => deletePO(o.orderId)}
-                            >
-                              Delete
-                            </button>
-                          </>
-                        )}
-                        {o.status === "paid" && (
-                          <button 
-                            className="btn btn-success btn-sm" 
-                            onClick={() => receiveOrder(o.orderId)}
-                          >
-                            Receive Order
+                        <div style={{ display: "flex", gap: 8 }}>
+                          <button className="btn btn-success btn-sm" onClick={() => openPOModal(t)}>
+                            Create PO
                           </button>
-                        )}
-                        {o.status === "received" && (
-                          <div style={{ 
-                            fontSize: 11, 
-                            color: "var(--muted)",
-                            fontStyle: "italic"
-                          }}>
-                            Order complete
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Notes (if any) */}
-                      {o.notes && (
-                        <div style={{ 
-                          marginTop: 8, 
-                          padding: 8, 
-                          background: "var(--bg)", 
-                          borderRadius: 6,
-                          fontSize: 11,
-                          color: "var(--muted)",
-                          fontStyle: "italic"
-                        }}>
-                          📝 {o.notes}
+                          <button className="btn btn-danger btn-sm" onClick={() => rmQueue(t.id)}>
+                            ×
+                          </button>
                         </div>
-                      )}
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </div>
-        </div>
-  </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
 
-      {/* TOAST */}
+            {/* PENDING POs */}
+            <div className="card" style={{ padding: 0, boxShadow: "var(--shadow)" }}>
+              <div style={{ 
+                padding: "16px 20px", 
+                background: "#dbeafe", 
+                borderBottom: "1px solid #93c5fd",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center"
+              }}>
+                <strong style={{ fontSize: 16, color: "#1e3a8a" }}>
+                  🧾 Purchase Orders ({orders.length})
+                </strong>
+                <div style={{ fontSize: 11, color: "#1e40af" }}>
+                  {orders.filter(o => o.status === "paid").length} paid
+                </div>
+              </div>
+              <div style={{ maxHeight: 400, overflow: "auto" }}>
+                {orders.length === 0 ? (
+                  <div style={{ padding: 40, textAlign: "center", color: "var(--muted)" }}>
+                    <div style={{ fontSize: 48 }}>📋</div>
+                    <p style={{ margin: "8px 0 0" }}>No purchase orders yet</p>
+                  </div>
+                ) : (
+                  <ul style={{ margin: 0, padding: 0, listStyle: "none" }}>
+                    {orders.map(o => {
+                      const totalCost = (o.quantity * o.unitPrice) + (o.shippingCost || 0);
+                      const isRush = o.shippingType && o.shippingType !== "Standard";
+                      
+                      return (
+                        <li 
+                          key={o.orderId} 
+                          style={{ 
+                            padding: "14px 20px", 
+                            borderBottom: "1px dashed var(--border)",
+                            background: o.status === "received" ? "var(--bg)" : "transparent"
+                          }}
+                        >
+                          <div style={{ 
+                            display: "flex", 
+                            justifyContent: "space-between", 
+                            alignItems: "center",
+                            marginBottom: 8
+                          }}>
+                            <div>
+                              <div style={{ fontWeight: 600, color: "var(--text)" }}>
+                                {o.name}
+                              </div>
+                              <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>
+                                PO: {o.poNumber} • {o.vendor || "—"}
+                              </div>
+                            </div>
+                            <StatusBadge status={o.status} />
+                          </div>
+
+                          <div style={{ 
+                            fontSize: 12, 
+                            color: "var(--muted)", 
+                            marginBottom: 8,
+                            display: "grid",
+                            gridTemplateColumns: "1fr 1fr",
+                            gap: 8
+                          }}>
+                            <div>
+                              Qty: <strong style={{ color: "var(--text)" }}>{o.quantity}</strong> × {money(o.unitPrice)}
+                            </div>
+                            <div>
+                              Ship: {money(o.shippingCost || 0)}
+                              {isRush && <span style={{ color: "#f59e0b", marginLeft: 4 }}>⚡ {o.shippingType}</span>}
+                            </div>
+                          </div>
+
+                          <div style={{ 
+                            display: "flex", 
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                            marginBottom: 10
+                          }}>
+                            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)" }}>
+                              Total: {money(totalCost)}
+                            </div>
+                            <div style={{ fontSize: 11, color: "var(--muted)" }}>
+                              {o.status === "ordered" && `Ordered ${new Date(o.dateOrdered).toLocaleDateString()}`}
+                              {o.status === "paid" && `Paid ${new Date(o.datePaid).toLocaleDateString()}`}
+                              {o.status === "received" && `Received ${new Date(o.dateReceived).toLocaleDateString()}`}
+                            </div>
+                          </div>
+
+                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                            {o.status === "ordered" && (
+                              <>
+                                <button 
+                                  className="btn btn-primary btn-sm" 
+                                  onClick={() => markPaid(o.orderId)}
+                                >
+                                  Mark Paid
+                                </button>
+                                <button 
+                                  className="btn btn-danger btn-sm" 
+                                  onClick={() => deletePO(o.orderId)}
+                                >
+                                  Delete
+                                </button>
+                              </>
+                            )}
+                            {o.status === "paid" && (
+                              <button 
+                                className="btn btn-success btn-sm" 
+                                onClick={() => receiveOrder(o.orderId)}
+                              >
+                                Receive Order
+                              </button>
+                            )}
+                            {o.status === "received" && (
+                              <div style={{ 
+                                fontSize: 11, 
+                                color: "var(--muted)",
+                                fontStyle: "italic"
+                              }}>
+                                Order complete
+                              </div>
+                            )}
+                          </div>
+
+                          {o.notes && (
+                            <div style={{ 
+                              marginTop: 8, 
+                              padding: 8, 
+                              background: "var(--bg)", 
+                              borderRadius: 6,
+                              fontSize: 11,
+                              color: "var(--muted)",
+                              fontStyle: "italic"
+                            }}>
+                              📝 {o.notes}
+                            </div>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
+            </div>
+          </div>
+        </Tab>
+
+        {/* ═══════════════ TAB 2: APPROVAL QUEUE ═══════════════ */}
+        <Tab label="✅ Approvals">
+          <div style={{ padding: "24px" }}>
+            <ApprovalQueue userRole="manager" />
+          </div>
+        </Tab>
+
+        {/* ═══════════════ TAB 3: NEW PROJECT TOOL ═══════════════ */}
+        <Tab label="🆕 Project Tool">
+          <div style={{ padding: "24px" }}>
+            <NewProjectToolRequest />
+          </div>
+        </Tab>
+      </Tabs>
+
+      {/* TOAST (outside tabs) */}
       {toast && (
         <div className="toast">
           <span>✅</span>
@@ -1544,7 +1582,7 @@ const deletePO = (orderId) => {
         </div>
       )}
 
-      {/* EDIT MODAL */}
+      {/* EDIT MODAL (outside tabs) */}
       {modalOpen && (
         <div className="modal-backdrop" onClick={() => setModalOpen(false)}>
           <div
@@ -1668,7 +1706,7 @@ const deletePO = (orderId) => {
         </div>
       )}
 
-      {/* PO MODAL */}
+      {/* PO MODAL (outside tabs) */}
       {poModalOpen && (
         <POModal
           tool={poTool}
