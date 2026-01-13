@@ -1,88 +1,226 @@
-import React, { useMemo, useState } from "react";
-import { LS, load, save } from "./storage";
+// src/OperatorPull.jsx (Firestore-backed)
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import "./modern-light.css";
 
-export default function OperatorPull() {
-  const [tools, setTools] = useState(load(LS.tools, []));
-  const [pulls, setPulls] = useState(load(LS.pulls, []));
-  const [queue, setQueue] = useState(load(LS.queue, []));
-  const [search, setSearch] = useState("");
+import { db } from "./firebase";
+import {
+  addDoc,
+  collection,
+  doc,
+  onSnapshot,
+  orderBy,
+  query,
+  limit,
+  serverTimestamp,
+  updateDoc,
+  writeBatch,
+} from "firebase/firestore";
 
-  // persist helpers
-  const persistTools = (next) => { setTools(next); save(LS.tools, next); };
-  const persistPulls = (next) => { setPulls(next); save(LS.pulls, next); };
-  const persistQueue = (next) => { setQueue(next); save(LS.queue, next); };
+const Input = ({ label, value, onChange, ...p }) => (
+  <div className="input">
+    <label>{label}</label>
+    <input {...p} value={String(value ?? "")} onChange={(e) => onChange?.(e.target.value)} />
+  </div>
+);
+
+const packDisplay = (qtyEach, packSize) => {
+  const ps = Number(packSize);
+  const q = Number(qtyEach) || 0;
+  if (!ps || ps <= 1) return null;
+  const packs = Math.floor(q / ps);
+  const each = q % ps;
+  return `${packs} pk + ${each} ea`;
+};
+
+
+const poStatusChip = (s) => {
+  const map = {
+    pending: ["low", "Pending"],
+    approved: ["ok", "Approved"],
+    ordered: ["ok", "Ordered"],
+    received: ["ok", "Received"],
+    paid: ["ok", "Paid"],
+    cancelled: ["zero", "Cancelled"],
+  };
+  const v = map[String(s || "").toLowerCase()] || ["subtle", s || "—"];
+  return <span className={`badge ${v[0]}`}>{v[1]}</span>;
+};
+
+
+
+export default function OperatorPull({ session }) {
+  const [tools, setTools] = useState([]);
+  const [search, setSearch] = useState("");
+  const [toast, setToast] = useState("");
+
+  // PO Status (read-only for operators)
+  const [showPOStatus, setShowPOStatus] = useState(false);
+  const [pos, setPos] = useState([]);
+
+  useEffect(() => {
+    const pq = query(collection(db, "purchaseOrders"), orderBy("updatedAt", "desc"), limit(20));
+    const unsub = onSnapshot(pq, (snap) => {
+      setPos(snap.docs.map((d) => ({ id: d.id, ...(d.data() || {}) })));
+    });
+    return () => unsub();
+  }, []);
+
+  // Simple barcode scan (keyboard wedge)
+  const scanRef = useRef(null);
+  const [scanValue, setScanValue] = useState("");
+  const [scanMode, setScanMode] = useState(false);
+
+  const note = (m) => {
+    setToast(m);
+    setTimeout(() => setToast(""), 2200);
+  };
+
+  useEffect(() => {
+    const q = query(collection(db, "tools"), orderBy("updatedAt", "desc"));
+    const unsub = onSnapshot(q, (snap) => {
+      const next = snap.docs.map((d) => {
+        const x = d.data() || {};
+        return {
+          id: d.id,
+          name: x.name || "",
+          manufacturer: x.manufacturer || "",
+          partNumber: x.partNumber || "",
+          barcode: x.barcode || "",
+          description: x.description || "",
+          toolType: x.toolType || "",
+          machineGroup: x.machineGroup || "",
+          packSize: x.packSize || "",
+          quantity: Number(x.qtyEach ?? x.quantity ?? 0) || 0,
+          threshold: Number(x.thresholdEach ?? x.threshold ?? 0) || 0,
+          location: x.location || {},
+          trackingMode: x.trackingMode || "tracked",
+        };
+      });
+      setTools(next);
+    });
+    return () => unsub();
+  }, []);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return tools;
     return tools.filter((t) => {
       const hay = [
-        t.name, t.manufacturer, t.partNumber, t.description, t.vendor,
+        t.name, t.manufacturer, t.partNumber, t.barcode, t.description,
         t.machineGroup, t.toolType,
       ].filter(Boolean).join(" ").toLowerCase();
       return hay.includes(q);
     });
   }, [tools, search]);
 
-  const pullOne = (tool) => {
-    if (!tool || (tool.quantity || 0) <= 0) return;
-    const job = window.prompt(`Job number for pulling "${tool.name}"?`);
-    if (!job) return;
-
-    // decrement stock
-    const updated = tools.map((t) =>
-      t.id === tool.id ? { ...t, quantity: Math.max(0, (t.quantity || 0) - 1) } : t
-    );
-    persistTools(updated);
-
-    // log pull
-    const log = {
-      id: Date.now(),
-      toolId: tool.id,
-      name: tool.name,
-      job: job.trim(),
-      qty: 1,
-      ts: new Date().toISOString(),
-    };
-    persistPulls([...pulls, log]);
+  const beginScan = () => {
+    setScanMode(true);
+    setScanValue("");
+    setTimeout(() => scanRef.current?.focus(), 0);
   };
 
-  const requestReorder = (tool) => {
+  const pullTool = async (tool, qty = 1, jobNumber = "") => {
     if (!tool) return;
-    const exists = queue.some((q) => q.id === tool.id);
-    if (exists) return;
-    const next = [...queue, tool];
-    persistQueue(next);
-    alert(`Requested reorder for "${tool.name}"`);
+    const q = Number(qty) || 0;
+    if (q <= 0) return;
+
+    // Fetch current from local state (optimistic), but write safely: clamp at 0
+    const nextQty = Math.max(0, (tool.quantity || 0) - q);
+
+    const batch = writeBatch(db);
+    if ((tool.trackingMode || "tracked") === "tracked") {
+      batch.update(doc(db, "tools", tool.id), {
+        qtyEach: nextQty,
+        updatedAt: serverTimestamp(),
+      });
+    }
+    batch.set(doc(collection(db, "transactions")), {
+      toolId: tool.id,
+      toolName: tool.name,
+      type: "PULL",
+      qtyEachDelta: -q,
+      jobNumber: jobNumber || "",
+      performedByUid: session?.user?.uid || null,
+      performedByName: session?.profile?.displayName || session?.user?.email || "",
+      createdAt: serverTimestamp(),
+    });
+    await batch.commit();
+    note(`Pulled ${q} × ${tool.name} ✅`);
+  };
+
+  const requestReorder = async (tool) => {
+    if (!tool) return;
+    await addDoc(collection(db, "transactions"), {
+      toolId: tool.id,
+      toolName: tool.name,
+      type: "ORDER_REQUEST",
+      qtyEachDelta: 0,
+      jobNumber: "",
+      performedByUid: session?.user?.uid || null,
+      performedByName: session?.profile?.displayName || session?.user?.email || "",
+      createdAt: serverTimestamp(),
+    });
+    note(`Requested reorder for "${tool.name}"`);
   };
 
   return (
     <div className="app">
-      {/* Header */}
-      <div className="header">
-        <div className="brand">
-          <div className="logo">👷</div>
-          <h1>Operator</h1>
-        </div>
-        <div className="toolbar">
-          <a className="btn" href="#/kitting">Job Kitting</a>
-          <a className="btn" href="#/">⬅ Back to Admin</a>
-        </div>
-      </div>
+      {/* Hidden scan input */}
+      <input
+        ref={scanRef}
+        value={scanValue}
+        onChange={(e) => setScanValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key !== "Enter") return;
+          const raw = String(scanValue || "").trim();
+          if (!raw) return;
+          const hit = tools.find((t) => String(t.barcode || "").trim() === raw);
+          if (!hit) {
+            note("Barcode not found.");
+            setScanMode(false);
+            setScanValue("");
+            return;
+          }
+          // Minimal operator flow: pull 1 with job prompt
+          const job = window.prompt(`Job number for pulling "${hit.name}"?`) || "";
+          pullTool(hit, 1, job.trim());
+          setScanMode(false);
+          setScanValue("");
+        }}
+        onBlur={() => setScanMode(false)}
+        style={{ position: "absolute", left: -9999, top: -9999, width: 1, height: 1, opacity: 0 }}
+        aria-hidden="true"
+      />
 
-      {/* Quick search */}
-      <div className="controls">
-        <div className="search">
-          <input
-            placeholder="Search tools (name, part #, type, machine group…) "
+      <div className="card" style={{ padding: 16, marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 800 }}>👷 Operator — Pull Tools</div>
+            <div className="subtle" style={{ marginTop: 4 }}>
+              Search, or scan a tool barcode to pull 1.
+            </div>
+          </div>
+
+          <div className="toolbar" style={{ gap: 10 }}>
+            <button className="btn btn-primary" onClick={beginScan} title="Click then scan barcode">
+              📟 Scan Barcode
+            </button>
+            <div className="subtle" style={{ fontSize: 12 }}>
+              {scanMode ? "Ready to scan…" : ""}
+            </div>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 12 }}>
+          <Input
+            label="Search"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={setSearch}
+            placeholder="Search tools (name, part #, barcode, type…)"
           />
         </div>
       </div>
 
-      {/* Tool list (compact) */}
       <div className="card table-wrap">
         <div className="table-scroll">
           <table className="table">
@@ -104,19 +242,21 @@ export default function OperatorPull() {
               {filtered.map((t) => {
                 const isZero = (t.quantity || 0) === 0;
                 const isLow = (t.quantity || 0) <= (t.threshold || 0);
+                const pack = packDisplay(t.quantity, t.packSize);
                 return (
                   <tr key={t.id}>
                     <td>
                       <div style={{ fontWeight: 600 }}>{t.name}</div>
                       <div className="subtle">
-                        {t.manufacturer || "—"} · {t.partNumber || "—"}
+                        {t.manufacturer || "—"} · {t.partNumber || "—"} {t.barcode ? `· ${t.barcode}` : ""}
                       </div>
                       {t.description && (
                         <div className="subtle" style={{ marginTop: 2 }}>{t.description}</div>
                       )}
                     </td>
                     <td>
-                      {(t.quantity || 0)}{" "}
+                      {(t.quantity || 0)}
+                      {pack && <div className="subtle" style={{ fontSize: 12 }}>{pack}</div>}
                       {isZero ? (
                         <span className="badge zero" style={{ marginLeft: 6 }}>Out</span>
                       ) : isLow ? (
@@ -132,15 +272,18 @@ export default function OperatorPull() {
                         <button
                           className="btn btn-primary"
                           disabled={(t.quantity || 0) <= 0}
-                          onClick={() => pullOne(t)}
+                          onClick={() => {
+                            const job = window.prompt(`Job number for pulling "${t.name}"?`) || "";
+                            pullTool(t, 1, job.trim());
+                          }}
                           title="Pull 1 and log job #"
                         >
-                          Pull
+                          Pull 1
                         </button>
                         <button
                           className="btn"
                           onClick={() => requestReorder(t)}
-                          title="Ask Admin to reorder"
+                          title="Ask Purchasing/Admin to reorder"
                         >
                           Request Reorder
                         </button>
@@ -154,26 +297,48 @@ export default function OperatorPull() {
         </div>
       </div>
 
-      {/* Pull history */}
-      <div className="card" style={{ marginTop: 14 }}>
-        <div style={{ padding: 12, borderBottom: "1px solid var(--border)" }}>
-          <strong>🧾 Pull History</strong>
+      {toast && (
+        <div className="toast" style={{ position: "fixed", bottom: 18, right: 18 }}>
+          {toast}
         </div>
-        <ul style={{ listStyle: "none", margin: 0, padding: 12 }}>
-          {pulls.length === 0 && <li className="subtle">No pulls logged yet.</li>}
-          {pulls.slice().reverse().map((p) => (
-            <li
-              key={p.id}
-              style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px dashed var(--border)" }}
-            >
-              <span>
-                <strong>{p.name}</strong> — Job <strong>{p.job}</strong> — Qty {p.qty}
-              </span>
-              <span className="subtle">{new Date(p.ts).toLocaleString()}</span>
-            </li>
-          ))}
-        </ul>
+      )}
+    
+      {/* PO STATUS */}
+      <div className="card" style={{ marginTop: 16 }}>
+        <div
+          style={{
+            padding: 16,
+            borderBottom: "1px solid var(--border)",
+            background: "#dbeafe",
+            cursor: "pointer",
+            display: "flex",
+            justifyContent: "space-between",
+          }}
+          onClick={() => setShowPOStatus((p) => !p)}
+        >
+          <strong style={{ color: "#1e3a8a" }}>PO Status</strong>
+          <span style={{ color: "#1e3a8a" }}>{showPOStatus ? "−" : "+"}</span>
+        </div>
+        {showPOStatus && (
+          <div style={{ padding: 16, maxHeight: 260, overflow: "auto" }}>
+            {pos.length === 0 && <div className="subtle">No purchase orders yet</div>}
+            {pos.map((po) => (
+              <div key={po.id} style={{ padding: "10px 0", borderBottom: "1px dashed var(--border)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+                  <div style={{ fontWeight: 700, color: "var(--text)" }}>
+                    PO {po.poNumber || "—"} {po.vendor ? `· ${po.vendor}` : ""}
+                  </div>
+                  {poStatusChip(po.status)}
+                </div>
+                <div className="subtle">
+                  {po.projectJob || ""} {Array.isArray(po.requisitionIds) && po.requisitionIds.length ? `· Reqs: ${po.requisitionIds.length}` : ""}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
-    </div>
+
+</div>
   );
 }

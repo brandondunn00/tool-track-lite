@@ -1,81 +1,63 @@
 // src/Login.jsx
-import React, { useEffect, useState } from "react";
-import { LS, load, save } from "./storage";
+import React, { useState } from "react";
 import "./modern-light.css";
+import { auth } from "./firebase";
+import { signInWithEmailAndPassword } from "firebase/auth";
 
 export default function Login({ onSuccess }) {
-  const [username, setUsername] = useState("");
-  const [pin, setPin] = useState("");
+  const [email, setEmail] = useState("");
+  const [pw, setPw] = useState("");
   const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
-    // Seed default operator if none
-    const users = load(LS.users, []);
-    if (!users || users.length === 0) {
-      const seeded = [{ id: 1, username: "operator", pin: "1234", role: "operator" }];
-      save(LS.users, seeded);
-    }
-  }, []);
-
-  const handleLogin = (e) => {
+  const submit = async (e) => {
     e.preventDefault();
-    const users = load(LS.users, []);
-    const user = users.find((u) => u.username === username && u.pin === pin);
-
-    if (!user) {
-      setErr("Invalid username or PIN");
-      return;
-    }
-
-    // Save session
-    const session = { username: user.username, role: user.role, ts: Date.now() };
-    save(LS.session, session);
-
-    // Tell the rest of the app in this same tab
+    setErr("");
+    setBusy(true);
     try {
-      window.dispatchEvent(new Event("session-updated"));
-      // also kick hash router
-      window.dispatchEvent(new HashChangeEvent("hashchange"));
-    } catch {}
-
-    // Route to operator
-    window.location.hash = "#/operator";
-
-    // Optional callback
-    onSuccess?.(user);
+      await signInWithEmailAndPassword(auth, email.trim(), pw);
+      onSuccess?.();
+    } catch (ex) {
+      setErr(ex?.message || "Login failed");
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
-    <div className="app" style={{ alignItems: "center", justifyContent: "center", display: "flex" }}>
-      <div className="card" style={{ width: 360, padding: 18 }}>
-        <h2 style={{ marginTop: 0, marginBottom: 10 }}>Operator Login</h2>
-        <form onSubmit={handleLogin} className="input" style={{ gap: 10 }}>
-          <div className="input">
-            <label>Username</label>
-            <input
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              placeholder="operator"
-              autoComplete="username"
-            />
+    <div className="app" style={{ maxWidth: 520 }}>
+      <div className="card" style={{ padding: 18 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+          <div style={{ fontSize: 28 }}>🔐</div>
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 800 }}>Sign in</div>
+            <div className="subtle" style={{ marginTop: 2 }}>Use your Toolly shop login.</div>
           </div>
+        </div>
+
+        <form onSubmit={submit} style={{ display: "grid", gap: 12 }}>
           <div className="input">
-            <label>PIN</label>
-            <input
-              value={pin}
-              onChange={(e) => setPin(e.target.value)}
-              placeholder="1234"
-              inputMode="numeric"
-              autoComplete="current-password"
-              type="password"
-            />
+            <label>Email</label>
+            <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@company.com" />
           </div>
-          {err && <div style={{ color: "#b91c1c", fontSize: 12 }}>{err}</div>}
-          <button className="btn btn-primary" type="submit" style={{ marginTop: 6 }}>
-            Sign in
+
+          <div className="input">
+            <label>Password</label>
+            <input type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="••••••••" />
+          </div>
+
+          {err && (
+            <div style={{ color: "#ef4444", fontSize: 13 }}>
+              {err}
+            </div>
+          )}
+
+          <button className="btn btn-primary" disabled={busy || !email || !pw} type="submit">
+            {busy ? "Signing in…" : "Sign in"}
           </button>
-          <div className="subtle" style={{ marginTop: 8 }}>
-            Tip: default user is <strong>operator / 1234</strong>
+
+          <div className="subtle" style={{ fontSize: 12 }}>
+            If you don’t have a login yet, ask your admin to create one in Firebase Auth and assign your role in Toolly Settings.
           </div>
         </form>
       </div>
